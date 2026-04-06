@@ -1,9 +1,9 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import type { PurchaseDetail } from "../api";
 import { useIdleReset } from "../useIdleReset";
 
-const AUTO_HOME_MS = 4_000;
+const AUTO_HOME_SEC = 3;
 
 type Loc = { purchase?: PurchaseDetail };
 
@@ -11,16 +11,21 @@ export function Done({ onIdleReset }: { onIdleReset: () => void }) {
   const navigate = useNavigate();
   const location = useLocation();
   const purchase = (location.state as Loc | null)?.purchase;
+  const [tick, setTick] = useState(0);
 
   useIdleReset(true, onIdleReset, 45_000);
 
   useEffect(() => {
-    const t = setTimeout(() => {
+    if (tick >= AUTO_HOME_SEC) {
       onIdleReset();
       navigate("/", { replace: true });
-    }, AUTO_HOME_MS);
+      return;
+    }
+    const t = setTimeout(() => setTick((n) => n + 1), 1000);
     return () => clearTimeout(t);
-  }, [navigate, onIdleReset]);
+  }, [tick, navigate, onIdleReset]);
+
+  const secondsLeft = AUTO_HOME_SEC - tick;
 
   return (
     <div className="page done">
@@ -29,6 +34,15 @@ export function Done({ onIdleReset }: { onIdleReset: () => void }) {
       </div>
       <h1>購入を記録しました</h1>
       <p className="muted">お支払いは案内に従って完了してください。</p>
+
+      <p className="done-autohome" aria-live="polite">
+        <span className="done-autohome-label">自動でメイン画面に戻ります</span>
+        {tick < AUTO_HOME_SEC && (
+          <span className="done-autohome-count" aria-label={`あと${secondsLeft}秒`}>
+            {secondsLeft}
+          </span>
+        )}
+      </p>
 
       {purchase && (
         <section className="receipt">

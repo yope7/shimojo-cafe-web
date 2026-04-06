@@ -7,6 +7,8 @@ import { useCheckout } from "../checkout";
 import { useIdleReset } from "../useIdleReset";
 import type { Buyer, Item } from "../types";
 
+const FIXED_PRODUCT_IMAGE_URL = "/images/cupramen-pro.jpg";
+
 export function Shop({
   onIdleReset,
 }: {
@@ -62,6 +64,7 @@ export function Shop({
   const instruction = paymentMethod === "PAYPAY" ? paypayText : paymentMethod === "CASH" ? cashText : "";
   const heavyBuyerIds = new Set(heavyBuyers.map((b) => b.buyerId));
   const otherBuyers = buyers.filter((b) => !heavyBuyerIds.has(b.buyerId));
+  const compactBuyerName = (name: string) => name.slice(0, 5);
 
   const complete = async () => {
     if (!paymentMethod) return;
@@ -129,9 +132,31 @@ export function Shop({
       )}
       {error && <p className="banner error">{error}</p>}
 
+      <nav className="shop-flow-steps" aria-label="購入の流れ">
+        <ol className="shop-flow-steps-list">
+          <li
+            className="shop-flow-step"
+            data-state={mode === "cart" ? "current" : "done"}
+            aria-current={mode === "cart" ? "step" : undefined}
+          >
+            <span className="shop-flow-step-num">1</span>
+            <span className="shop-flow-step-label">商品・カート</span>
+          </li>
+          <li
+            className="shop-flow-step"
+            data-state={mode === "checkout" ? "current" : "upcoming"}
+            aria-current={mode === "checkout" ? "step" : undefined}
+          >
+            <span className="shop-flow-step-num">2</span>
+            <span className="shop-flow-step-label">購入・お支払い</span>
+          </li>
+        </ol>
+      </nav>
+
       {mode === "cart" ? (
         <div className="shop-workspace">
           <section className="shop-products-panel">
+            <h2 className="shop-panel-title shop-products-panel-title">商品</h2>
             <div className="shop-scroll">
               <div className="grid products">
                 {items.map((it) => {
@@ -150,11 +175,7 @@ export function Shop({
                       }}
                     >
                       <div className="product-thumb">
-                        {it.imageUrl ? (
-                          <img src={it.imageUrl} alt="" />
-                        ) : (
-                          <span className="placeholder">{it.name.slice(0, 1)}</span>
-                        )}
+                        <img src={FIXED_PRODUCT_IMAGE_URL} alt="" />
                       </div>
                       <div className="product-meta">
                         <div className="name">{it.name}</div>
@@ -245,127 +266,153 @@ export function Shop({
           </aside>
         </div>
       ) : (
-        <section className="shop-checkout-stage">
-          <div className="shop-checkout-header">
-            <h2 className="shop-panel-title">購入者・お支払い</h2>
-            <p className="muted shop-checkout-meta">合計 ¥{totalPrice.toLocaleString()}</p>
-          </div>
-          {stockError && <p className="banner error">{stockError}</p>}
-          {paymentWarn && <p className="banner error">{paymentWarn}</p>}
-          <div className="shop-checkout-body">
-            <section className="instruction shop-checkout-buyers">
-              <h2>購入者（任意）</h2>
-              <p className="muted">選ばない場合は匿名購入になります。</p>
-              <div className="shop-buyer-scroll">
-                {heavyBuyers.length > 0 && (
-                  <>
-                    <p className="muted buyer-subhead">よく購入する人（過去7日）</p>
-                    <div className="grid buyers shop-buyer-grid-inline shop-buyer-heavy-grid">
-                      {heavyBuyers.map((b) => (
-                        <button
-                          key={b.buyerId}
-                          type="button"
-                          className={`buyer-card ${buyerType === "NAMED" && buyerId === b.buyerId ? "selected" : ""}`}
-                          onClick={() => {
-                            flushSync(() => {
-                              setBuyer("NAMED", b.buyerId);
-                            });
-                            setPaymentWarn(null);
-                          }}
-                        >
-                          <div className="avatar">
-                            {b.photoUrl ? <img src={b.photoUrl} alt="" /> : <span>{b.name.slice(0, 1)}</span>}
-                          </div>
-                          <div className="name">{b.name}</div>
-                        </button>
-                      ))}
-                    </div>
-                    <p className="muted buyer-subhead">すべての購入者</p>
-                  </>
-                )}
-                <div className="grid buyers shop-buyer-grid-inline">
-                {otherBuyers.map((b) => (
-                    <button
-                      key={b.buyerId}
-                      type="button"
-                      className={`buyer-card ${buyerType === "NAMED" && buyerId === b.buyerId ? "selected" : ""}`}
-                      onClick={() => {
-                        flushSync(() => {
-                          setBuyer("NAMED", b.buyerId);
-                        });
-                        setPaymentWarn(null);
-                      }}
-                    >
-                      <div className="avatar">
-                        {b.photoUrl ? <img src={b.photoUrl} alt="" /> : <span>{b.name.slice(0, 1)}</span>}
+        <div className="shop-workspace">
+          <section className="shop-products-panel shop-checkout-stage">
+            {stockError && <p className="banner error">{stockError}</p>}
+            {paymentWarn && <p className="banner error">{paymentWarn}</p>}
+            <div className="shop-checkout-body">
+              <section className="instruction shop-checkout-buyers">
+                <div className="shop-buyer-scroll">
+                  {heavyBuyers.length > 0 && (
+                    <>
+                      <p className="muted buyer-subhead">よく購入する人（過去7日）</p>
+                      <div className="grid buyers shop-buyer-grid-inline shop-buyer-heavy-grid">
+                        {heavyBuyers.map((b) => (
+                          <button
+                            key={b.buyerId}
+                            type="button"
+                            className={`buyer-card ${buyerType === "NAMED" && buyerId === b.buyerId ? "selected" : ""}`}
+                            title={b.name}
+                            onClick={() => {
+                              flushSync(() => {
+                                setBuyer("NAMED", b.buyerId);
+                              });
+                              setPaymentWarn(null);
+                            }}
+                          >
+                            <div className="name">{compactBuyerName(b.name)}</div>
+                          </button>
+                        ))}
                       </div>
-                      <div className="name">{b.name}</div>
-                    </button>
+                      <p className="muted buyer-subhead">すべての購入者</p>
+                    </>
+                  )}
+                  <div className="grid buyers shop-buyer-grid-inline">
+                    {otherBuyers.map((b) => (
+                      <button
+                        key={b.buyerId}
+                        type="button"
+                        className={`buyer-card ${buyerType === "NAMED" && buyerId === b.buyerId ? "selected" : ""}`}
+                        title={b.name}
+                        onClick={() => {
+                          flushSync(() => {
+                            setBuyer("NAMED", b.buyerId);
+                          });
+                          setPaymentWarn(null);
+                        }}
+                      >
+                        <div className="name">{compactBuyerName(b.name)}</div>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </section>
+              <section className="instruction shop-checkout-payment">
+                <h2>お支払い方法</h2>
+                <div className="pay-grid buyer-pay-grid">
+                  <button
+                    type="button"
+                    className={`btn huge ${paymentMethod === "PAYPAY" ? "primary" : "secondary"}`}
+                    onClick={() => {
+                      setPayment("PAYPAY");
+                      setPaymentWarn(null);
+                    }}
+                  >
+                    PayPay
+                  </button>
+                  <button
+                    type="button"
+                    className={`btn huge ${paymentMethod === "CASH" ? "primary" : "secondary"}`}
+                    onClick={() => {
+                      setPayment("CASH");
+                      setPaymentWarn(null);
+                    }}
+                  >
+                    現金
+                  </button>
+                </div>
+                <p className={`instruction-body ${paymentMethod ? "" : "instruction-placeholder"}`}>
+                  {paymentMethod ? instruction : "支払い方法を選択すると、ここに案内が表示されます。"}
+                </p>
+              </section>
+            </div>
+          </section>
+
+          <aside className="shop-cart-panel shop-checkout-side" aria-live="polite">
+            <div className="shop-dock-inner">
+              <h2 className="shop-panel-title">カート</h2>
+              <div className="shop-dock-body">
+                <ul className="shop-dock-lines">
+                  {lines.map((l) => (
+                    <li key={l.itemId} className="shop-dock-line">
+                      <div className="shop-dock-line-info">
+                        <span className="shop-dock-name">{l.name}</span>
+                        <span className="shop-dock-sub">¥{l.price}</span>
+                      </div>
+                      <div className="shop-dock-controls">
+                        <button type="button" className="dock-step dock-step-placeholder" aria-hidden="true" tabIndex={-1}>
+                          −
+                        </button>
+                        <span className="dock-qty">{l.quantity}</span>
+                        <button type="button" className="dock-step dock-step-placeholder" aria-hidden="true" tabIndex={-1}>
+                          +
+                        </button>
+                        <span className="dock-line-total">¥{(l.price * l.quantity).toLocaleString()}</span>
+                        <button
+                          type="button"
+                          className="dock-remove dock-remove-placeholder"
+                          aria-hidden="true"
+                          tabIndex={-1}
+                        >
+                          削除
+                        </button>
+                      </div>
+                    </li>
                   ))}
+                </ul>
+              </div>
+
+              <div className="shop-dock-footer">
+                <div className="shop-dock-total">
+                  <span className="shop-dock-total-label">合計</span>
+                  <div className="shop-dock-total-right">
+                    {totalCount > 0 && <span className="shop-dock-count">{totalCount} 点</span>}
+                    <span className="shop-dock-total-num">¥{totalPrice.toLocaleString()}</span>
+                  </div>
+                </div>
+                <div className="shop-checkout-actions shop-checkout-actions-side">
+                  <button
+                    type="button"
+                    className="btn secondary large"
+                    onClick={() => {
+                      setMode("cart");
+                    }}
+                  >
+                    カートへ戻る
+                  </button>
+                  <button
+                    type="button"
+                    className={`btn large ${paymentMethod ? "primary" : "payment-disabled"}`}
+                    disabled={submitting}
+                    onClick={handleCompleteClick}
+                  >
+                    購入を完了する
+                  </button>
                 </div>
               </div>
-            </section>
-            <section className="instruction shop-checkout-payment">
-              <h2>お支払い方法</h2>
-              <div className="pay-grid buyer-pay-grid">
-                <button
-                  type="button"
-                  className={`btn huge ${paymentMethod === "PAYPAY" ? "primary" : "secondary"}`}
-                  onClick={() => {
-                    setPayment("PAYPAY");
-                    setPaymentWarn(null);
-                  }}
-                >
-                  PayPay
-                </button>
-                <button
-                  type="button"
-                  className={`btn huge ${paymentMethod === "CASH" ? "primary" : "secondary"}`}
-                  onClick={() => {
-                    setPayment("CASH");
-                    setPaymentWarn(null);
-                  }}
-                >
-                  現金
-                </button>
-              </div>
-              <p className={`instruction-body ${paymentMethod ? "" : "instruction-placeholder"}`}>
-                {paymentMethod ? instruction : "支払い方法を選択すると、ここに案内が表示されます。"}
-              </p>
-            </section>
-          </div>
-          <div className="shop-checkout-actions">
-            <button
-              type="button"
-              className={`btn large ${buyerType === "ANONYMOUS" ? "primary" : "secondary"}`}
-              onClick={() => {
-                flushSync(() => {
-                  setBuyer("ANONYMOUS", null);
-                });
-                setPaymentWarn(null);
-              }}
-            >
-              匿名で購入
-            </button>
-            <button
-              type="button"
-              className="btn secondary large"
-              onClick={() => {
-                setMode("cart");
-              }}
-            >
-              カートへ戻る
-            </button>
-            <button
-              type="button"
-              className={`btn large ${paymentMethod ? "primary" : "payment-disabled"}`}
-              disabled={submitting}
-              onClick={handleCompleteClick}
-            >
-              購入を完了する
-            </button>
-          </div>
-        </section>
+            </div>
+          </aside>
+        </div>
       )}
 
     </div>

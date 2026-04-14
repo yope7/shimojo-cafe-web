@@ -441,6 +441,35 @@ button.shop-header-link {
   padding: 0.5rem 0.25rem;
 }
 
+.shop-feedback-actions {
+  display: flex;
+  gap: 0.45rem;
+  flex-wrap: wrap;
+}
+
+.shop-feedback-btn {
+  border: 1px solid #ead8bf;
+  background: #fff8eb;
+  color: #5b3b00;
+  border-radius: 999px;
+  font-size: 0.8rem;
+  font-weight: 700;
+  padding: 0.28rem 0.7rem;
+  cursor: pointer;
+}
+
+.shop-feedback-btn.secondary {
+  border-color: #d8e3f5;
+  background: #eff6ff;
+  color: #1f4f8f;
+}
+
+.shop-feedback-message {
+  margin: 0.1rem 0 0;
+  font-size: 0.78rem;
+  color: #2f5f2d;
+}
+
 .shop-dock-footer {
   flex-shrink: 0;
   border-top: 1px solid #e8e2d9;
@@ -1022,8 +1051,31 @@ button.shop-header-link {
   margin-top: 0;
 }
 
+.admin-help-icon {
+  margin-left: 0.45rem;
+  width: 40px;
+  min-height: 40px;
+  border-radius: 999px;
+  border: 1px solid #d7cfc3;
+  background: #fff;
+  font-size: 1.05rem;
+  cursor: pointer;
+}
+
+.admin-help-prompt {
+  margin: 0;
+  background: #faf7f2;
+  border: 1px solid #eadfce;
+  border-radius: 10px;
+  padding: 0.8rem;
+  white-space: pre-wrap;
+  line-height: 1.45;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+}
+
 .admin-table {
   width: 100%;
+  table-layout: fixed;
   border-collapse: collapse;
   background: var(--surface);
   border-radius: 12px;
@@ -1104,6 +1156,136 @@ button.shop-header-link {
   margin-bottom: 1rem;
 }
 
+.admin-csv-panel {
+  border: 1px solid #eadfce;
+  background: linear-gradient(180deg, #fffdfa 0%, #fff 100%);
+  padding: 1rem 1.1rem;
+}
+
+.admin-csv-panel-head {
+  margin-bottom: 0.7rem;
+}
+
+.admin-csv-panel-head h2 {
+  margin: 0 0 0.2rem;
+  font-size: 1.05rem;
+  color: #3a2d1f;
+}
+
+.admin-csv-panel-head p {
+  margin: 0;
+  font-size: 0.92rem;
+}
+
+.admin-csv-label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  font-weight: 700;
+  color: #4b3a28;
+}
+
+.admin-csv-textarea {
+  min-height: 190px;
+  padding: 0.75rem 0.8rem;
+  border-color: #d9ccb8;
+  background: #fffefc;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  line-height: 1.45;
+}
+
+.admin-csv-textarea:focus {
+  outline: 2px solid #ead8be;
+  border-color: #c7a274;
+}
+
+.admin-csv-actions {
+  margin-top: 0.8rem;
+}
+
+.admin-item-sell {
+  min-width: 180px;
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 0.2rem;
+}
+
+.admin-item-sell strong {
+  font-size: 0.95rem;
+}
+
+.admin-item-sell span {
+  font-size: 0.82rem;
+  color: #6a5a45;
+}
+
+.admin-col-name {
+  width: 24%;
+  min-width: 220px;
+}
+
+.admin-name-input {
+  width: 100%;
+  min-width: 200px;
+}
+
+.admin-stock-input {
+  width: 7.5ch;
+  min-width: 7.5ch;
+  text-align: right;
+}
+
+.admin-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  cursor: pointer;
+  user-select: none;
+}
+
+.admin-switch input {
+  position: absolute;
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+
+.admin-switch-track {
+  width: 42px;
+  height: 24px;
+  border-radius: 999px;
+  background: #d3d3d3;
+  position: relative;
+  transition: background 0.2s ease;
+}
+
+.admin-switch-thumb {
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25);
+  transition: transform 0.2s ease;
+}
+
+.admin-switch input:checked + .admin-switch-track {
+  background: var(--accent);
+}
+
+.admin-switch input:checked + .admin-switch-track .admin-switch-thumb {
+  transform: translateX(18px);
+}
+
+.admin-switch-label {
+  min-width: 2.4rem;
+  font-size: 0.82rem;
+  font-weight: 700;
+  color: #5a4a37;
+}
+
 .history-actions {
   margin-top: 0.65rem;
 }
@@ -1167,6 +1349,19 @@ textarea.input {
 .stat-list {
   margin: 0;
   padding-left: 1.2rem;
+}
+
+.monitor-chart-card h2 {
+  margin-top: 0;
+}
+
+.monitor-chart-box {
+  width: 100%;
+  height: 320px;
+  border: 1px solid #eadfce;
+  border-radius: 10px;
+  background: linear-gradient(180deg, #f9f4ec 0%, #fff 100%);
+  padding: 0.4rem;
 }
 
 .history-list {

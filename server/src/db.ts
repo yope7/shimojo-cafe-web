@@ -26,6 +26,7 @@ function initSchema(db: Database.Database) {
     CREATE TABLE IF NOT EXISTS items (
       item_id TEXT PRIMARY KEY,
       name TEXT NOT NULL,
+      cost_price INTEGER NOT NULL DEFAULT 0,
       price INTEGER NOT NULL,
       stock INTEGER NOT NULL,
       is_active INTEGER NOT NULL DEFAULT 1,
@@ -40,6 +41,7 @@ function initSchema(db: Database.Database) {
       buyer_id TEXT PRIMARY KEY,
       name TEXT NOT NULL,
       photo_url TEXT,
+      affiliation TEXT,
       is_active INTEGER NOT NULL DEFAULT 1
     );
 
@@ -80,6 +82,17 @@ function initSchema(db: Database.Database) {
 
     CREATE INDEX IF NOT EXISTS idx_supply_requests_created ON supply_requests(created_at);
 
+    CREATE TABLE IF NOT EXISTS item_feedbacks (
+      feedback_id TEXT PRIMARY KEY,
+      item_id TEXT NOT NULL,
+      feedback_type TEXT NOT NULL,
+      source TEXT NOT NULL DEFAULT 'pos',
+      created_at TEXT NOT NULL,
+      FOREIGN KEY (item_id) REFERENCES items(item_id)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_item_feedbacks_created ON item_feedbacks(created_at);
+
     CREATE TABLE IF NOT EXISTS stock_events (
       stock_event_id TEXT PRIMARY KEY,
       item_id TEXT NOT NULL,
@@ -106,12 +119,29 @@ function initSchema(db: Database.Database) {
     );
 
     CREATE INDEX IF NOT EXISTS idx_admin_operation_logs_created ON admin_operation_logs(created_at);
+
+    CREATE TABLE IF NOT EXISTS finance_snapshots (
+      date TEXT PRIMARY KEY,
+      recorded_purchase_total INTEGER NOT NULL DEFAULT 0,
+      shipping_fee INTEGER NOT NULL DEFAULT 0,
+      pool_fund INTEGER NOT NULL DEFAULT 0,
+      note TEXT,
+      updated_at TEXT NOT NULL
+    );
   `);
 
   // Existing DB migration for older schema.
   ensureColumn(db, "items", "alert_enabled INTEGER NOT NULL DEFAULT 1");
   ensureColumn(db, "items", "alert_threshold INTEGER NOT NULL DEFAULT 3");
   ensureColumn(db, "items", "alert_condition TEXT NOT NULL DEFAULT 'LTE'");
+  ensureColumn(db, "items", "cost_price INTEGER NOT NULL DEFAULT 0");
+  ensureColumn(db, "buyers", "affiliation TEXT");
+  db.exec(`
+    UPDATE items
+    SET cost_price = CAST(ROUND((price / 1.1) / 10.0, 0) * 10 AS INTEGER)
+    WHERE cost_price IS NULL OR cost_price <= 0
+  `);
+  db.exec(`UPDATE items SET price = CAST(ROUND((cost_price * 1.1) / 10.0, 0) * 10 AS INTEGER)`);
 }
 
 function ensureColumn(db: Database.Database, table: string, columnDef: string) {
@@ -139,17 +169,18 @@ function seedIfEmpty(db: Database.Database) {
     const i = idx + 1;
     return {
       name: `ダミー商品${String(i).padStart(2, "0")}`,
-      price: 80 + (i % 8) * 20,
+      costPrice: 80 + (i % 8) * 20,
       stock: 8 + (i % 7),
       order: i,
     };
   });
   const insItem = db.prepare(
-    `INSERT INTO items (item_id, name, price, stock, is_active, image_url, display_order)
-     VALUES (?, ?, ?, ?, 1, NULL, ?)`
+    `INSERT INTO items (item_id, name, cost_price, price, stock, is_active, image_url, display_order)
+     VALUES (?, ?, ?, ?, ?, 1, NULL, ?)`
   );
   for (const it of items) {
-    insItem.run(nanoid(), it.name, it.price, it.stock, it.order);
+    const sellPrice = Math.round((it.costPrice * 1.1) / 10) * 10;
+    insItem.run(nanoid(), it.name, it.costPrice, sellPrice, it.stock, it.order);
   }
 
   const buyers = Array.from({ length: 30 }, (_, idx) => ({
@@ -164,6 +195,7 @@ function seedIfEmpty(db: Database.Database) {
 export type ItemRow = {
   itemId: string;
   name: string;
+  costPrice: number;
   price: number;
   stock: number;
   isActive: boolean;
@@ -178,6 +210,7 @@ export type BuyerRow = {
   buyerId: string;
   name: string;
   photoUrl: string | null;
+  affiliation: string | null;
   isActive: boolean;
 };
 
@@ -185,6 +218,7 @@ function normItem(r: Record<string, unknown>): ItemRow {
   return {
     itemId: String(r.itemId),
     name: String(r.name),
+    costPrice: Number(r.costPrice ?? 0),
     price: Number(r.price),
     stock: Number(r.stock),
     isActive: Boolean(r.isActive),
@@ -199,7 +233,7 @@ function normItem(r: Record<string, unknown>): ItemRow {
 export function listItemsForSale(db: Database.Database): ItemRow[] {
   const rows = db
     .prepare(
-      `SELECT item_id as itemId, name, price, stock,
+      `SELECT item_id as itemId, name, cost_price as costPrice, price, stock,
               is_active as isActive, image_url as imageUrl, display_order as displayOrder,
               alert_enabled as alertEnabled, alert_threshold as alertThreshold, alert_condition as alertCondition
        FROM items WHERE is_active = 1 ORDER BY display_order ASC, name ASC`
@@ -211,7 +245,7 @@ export function listItemsForSale(db: Database.Database): ItemRow[] {
 export function listAllItems(db: Database.Database): ItemRow[] {
   const rows = db
     .prepare(
-      `SELECT item_id as itemId, name, price, stock,
+      `SELECT item_id as itemId, name, cost_price as costPrice, price, stock,
               is_active as isActive, image_url as imageUrl, display_order as displayOrder,
               alert_enabled as alertEnabled, alert_threshold as alertThreshold, alert_condition as alertCondition
        FROM items ORDER BY display_order ASC, name ASC`
@@ -225,6 +259,7 @@ function normBuyer(r: Record<string, unknown>): BuyerRow {
     buyerId: String(r.buyerId),
     name: String(r.name),
     photoUrl: r.photoUrl == null ? null : String(r.photoUrl),
+    affiliation: r.affiliation == null ? null : String(r.affiliation),
     isActive: Boolean(r.isActive),
   };
 }
@@ -233,6 +268,7 @@ export function listBuyersForSale(db: Database.Database): BuyerRow[] {
   const rows = db
     .prepare(
       `SELECT buyer_id as buyerId, name, photo_url as photoUrl, is_active as isActive
+              ,affiliation as affiliation
        FROM buyers WHERE is_active = 1 ORDER BY name ASC`
     )
     .all() as Record<string, unknown>[];
@@ -244,6 +280,7 @@ export function listHeavyBuyersForSale(db: Database.Database, days: number = 7, 
   const rows = db
     .prepare(
       `SELECT b.buyer_id as buyerId, b.name, b.photo_url as photoUrl, b.is_active as isActive
+              ,b.affiliation as affiliation
        FROM buyers b
        JOIN (
          SELECT p.buyer_id as buyerId, COUNT(*) as purchaseCount, MAX(p.purchased_at) as lastPurchasedAt
@@ -267,6 +304,7 @@ export function listAllBuyers(db: Database.Database): BuyerRow[] {
   const rows = db
     .prepare(
       `SELECT buyer_id as buyerId, name, photo_url as photoUrl, is_active as isActive
+              ,affiliation as affiliation
        FROM buyers ORDER BY name ASC`
     )
     .all() as Record<string, unknown>[];
@@ -370,7 +408,8 @@ export function upsertItem(
   data: {
     itemId?: string;
     name: string;
-    price: number;
+    costPrice: number;
+    price?: number;
     stock: number;
     isActive: boolean;
     imageUrl: string | null;
@@ -380,14 +419,21 @@ export function upsertItem(
     alertCondition?: "LTE" | "EQ";
   }
 ): string {
+  const normalizePrice = (value: number) => Math.max(0, Math.round(value / 10) * 10);
+  const calcSellPrice = (cost: number) => normalizePrice(cost * 1.1);
   const id = data.itemId && data.itemId.length > 0 ? data.itemId : nanoid();
   const alertThreshold = Math.max(0, Math.floor(data.alertThreshold ?? 3));
   const alertCondition = data.alertCondition === "EQ" ? "EQ" : "LTE";
+  const normalizedCostPrice = normalizePrice(Number(data.costPrice));
+  const normalizedPrice = Number.isFinite(Number(data.price))
+    ? normalizePrice(Number(data.price))
+    : calcSellPrice(normalizedCostPrice);
   db.prepare(
-    `INSERT INTO items (item_id, name, price, stock, is_active, image_url, display_order, alert_enabled, alert_threshold, alert_condition)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `INSERT INTO items (item_id, name, cost_price, price, stock, is_active, image_url, display_order, alert_enabled, alert_threshold, alert_condition)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(item_id) DO UPDATE SET
        name = excluded.name,
+       cost_price = excluded.cost_price,
        price = excluded.price,
        stock = excluded.stock,
        is_active = excluded.is_active,
@@ -399,7 +445,8 @@ export function upsertItem(
   ).run(
     id,
     data.name,
-    data.price,
+    normalizedCostPrice,
+    normalizedPrice,
     data.stock,
     data.isActive ? 1 : 0,
     data.imageUrl,
@@ -413,18 +460,33 @@ export function upsertItem(
 
 export function upsertBuyer(
   db: Database.Database,
-  data: { buyerId?: string; name: string; photoUrl: string | null; isActive: boolean }
+  data: { buyerId?: string; name: string; photoUrl: string | null; affiliation?: string | null; isActive: boolean }
 ): string {
   const id = data.buyerId && data.buyerId.length > 0 ? data.buyerId : nanoid();
+  const normalizedName = data.name.trim();
+  if (!normalizedName.length) throw new Error("INVALID_BUYER_NAME");
+  const dup = db
+    .prepare(`SELECT buyer_id as buyerId FROM buyers WHERE name = ? AND buyer_id <> ? LIMIT 1`)
+    .get(normalizedName, id) as { buyerId: string } | undefined;
+  if (dup) throw new Error("DUPLICATE_BUYER_NAME");
   db.prepare(
-    `INSERT INTO buyers (buyer_id, name, photo_url, is_active)
-     VALUES (?, ?, ?, ?)
+    `INSERT INTO buyers (buyer_id, name, photo_url, affiliation, is_active)
+     VALUES (?, ?, ?, ?, ?)
      ON CONFLICT(buyer_id) DO UPDATE SET
        name = excluded.name,
        photo_url = excluded.photo_url,
+       affiliation = excluded.affiliation,
        is_active = excluded.is_active`
-  ).run(id, data.name, data.photoUrl, data.isActive ? 1 : 0);
+  ).run(id, normalizedName, data.photoUrl, data.affiliation ?? null, data.isActive ? 1 : 0);
   return id;
+}
+
+export function deleteBuyer(db: Database.Database, buyerId: string): boolean {
+  const tx = db.transaction((id: string) => {
+    db.prepare(`UPDATE purchases SET buyer_id = NULL WHERE buyer_id = ?`).run(id);
+    return db.prepare(`DELETE FROM buyers WHERE buyer_id = ?`).run(id).changes === 1;
+  });
+  return tx(buyerId);
 }
 
 export type PurchaseSummary = {
@@ -491,11 +553,79 @@ export function listPurchasesByDate(db: Database.Database, date: string): Purcha
   }));
 }
 
+export function countPurchases(db: Database.Database): number {
+  const row = db.prepare(`SELECT COUNT(*) as c FROM purchases`).get() as { c: number };
+  return Number(row?.c ?? 0);
+}
+
+export function listPurchasesPaged(db: Database.Database, limit: number, offset: number): PurchaseSummary[] {
+  const safeLimit = Math.max(1, Math.min(100, Math.floor(limit)));
+  const safeOffset = Math.max(0, Math.floor(offset));
+  const rows = db
+    .prepare(
+      `SELECT p.purchase_id as purchaseId, p.purchased_at as purchasedAt, p.total_price as totalPrice,
+              p.payment_method as paymentMethod, p.buyer_type as buyerType, p.buyer_id as buyerId,
+              p.terminal_id as terminalId, p.status as status,
+              b.name as buyerName
+       FROM purchases p
+       LEFT JOIN buyers b ON p.buyer_id = b.buyer_id
+       ORDER BY p.purchased_at DESC
+       LIMIT ? OFFSET ?`
+    )
+    .all(safeLimit, safeOffset) as (PurchaseSummary & { buyerName: string | null })[];
+
+  const getItems = db.prepare(
+    `SELECT pi.item_id as itemId, i.name, pi.quantity, pi.unit_price as unitPrice, pi.subtotal
+     FROM purchase_items pi
+     JOIN items i ON pi.item_id = i.item_id
+     WHERE pi.purchase_id = ?`
+  );
+
+  return rows.map((r) => ({
+    ...r,
+    items: getItems.all(r.purchaseId) as PurchaseSummary["items"],
+  }));
+}
+
 export type Stats = {
   byPayment: { PAYPAY: number; CASH: number };
   anonymousCount: number;
   namedCount: number;
   byItem: { itemId: string; name: string; quantity: number }[];
+};
+
+export type MonitorMetrics = {
+  purchaseTotal: number;
+  purchaseCount: number;
+  canceledCount: number;
+};
+
+export type MonitorTimelinePoint = {
+  date: string;
+  purchaseTotal: number;
+  purchaseCount: number;
+  canceledCount: number;
+  paypayCount: number;
+  cashCount: number;
+};
+
+export type ItemAnalyticsPoint = {
+  itemId: string;
+  name: string;
+  quantity: number;
+  revenue: number;
+  avgUnitPrice: number;
+  currentPrice: number;
+  stock: number;
+};
+
+export type FinanceSnapshotRow = {
+  date: string;
+  recordedPurchaseTotal: number;
+  shippingFee: number;
+  poolFund: number;
+  note: string | null;
+  updatedAt: string;
 };
 
 export function statsForDate(db: Database.Database, date: string): Stats {
@@ -533,6 +663,186 @@ export function statsForDate(db: Database.Database, date: string): Stats {
     .all(`${date}T00:00:00.000Z`, `${date}T23:59:59.999Z`) as { itemId: string; name: string; quantity: number }[];
 
   return { byPayment, anonymousCount, namedCount, byItem: itemRows };
+}
+
+export function monitorMetricsForDate(db: Database.Database, date: string): MonitorMetrics {
+  const row = db
+    .prepare(
+      `SELECT
+         SUM(CASE WHEN status = 'COMPLETED' THEN total_price ELSE 0 END) as purchaseTotal,
+         SUM(CASE WHEN status = 'COMPLETED' THEN 1 ELSE 0 END) as purchaseCount,
+         SUM(CASE WHEN status = 'CANCELED' THEN 1 ELSE 0 END) as canceledCount
+       FROM purchases
+       WHERE purchased_at >= ? AND purchased_at < ?`
+    )
+    .get(`${date}T00:00:00.000Z`, `${date}T23:59:59.999Z`) as
+    | { purchaseTotal: number | null; purchaseCount: number | null; canceledCount: number | null }
+    | undefined;
+
+  return {
+    purchaseTotal: Number(row?.purchaseTotal ?? 0),
+    purchaseCount: Number(row?.purchaseCount ?? 0),
+    canceledCount: Number(row?.canceledCount ?? 0),
+  };
+}
+
+export function totalRevenueAllTime(db: Database.Database): number {
+  const row = db
+    .prepare(`SELECT SUM(total_price) as total FROM purchases WHERE status = 'COMPLETED'`)
+    .get() as { total: number | null } | undefined;
+  return Number(row?.total ?? 0);
+}
+
+export function listMonitorTimeline(db: Database.Database, days: number = 14): MonitorTimelinePoint[] {
+  const spanDays = Math.max(7, Math.min(365, Math.floor(days)));
+  const weekCount = Math.max(2, Math.ceil(spanDays / 7));
+  const today = new Date();
+  today.setUTCHours(0, 0, 0, 0);
+  const todayDow = (today.getUTCDay() + 6) % 7; // Monday=0
+  const currentWeekStart = new Date(today);
+  currentWeekStart.setUTCDate(today.getUTCDate() - todayDow);
+  const startWeek = new Date(currentWeekStart);
+  startWeek.setUTCDate(currentWeekStart.getUTCDate() - (weekCount - 1) * 7);
+
+  const rows = db
+    .prepare(
+      `SELECT
+         substr(purchased_at, 1, 10) as date,
+         SUM(CASE WHEN status = 'COMPLETED' THEN total_price ELSE 0 END) as purchaseTotal,
+         SUM(CASE WHEN status = 'COMPLETED' THEN 1 ELSE 0 END) as purchaseCount,
+         SUM(CASE WHEN status = 'CANCELED' THEN 1 ELSE 0 END) as canceledCount,
+         SUM(CASE WHEN status = 'COMPLETED' AND payment_method = 'PAYPAY' THEN 1 ELSE 0 END) as paypayCount,
+         SUM(CASE WHEN status = 'COMPLETED' AND payment_method = 'CASH' THEN 1 ELSE 0 END) as cashCount
+       FROM purchases
+       WHERE purchased_at >= ?
+       GROUP BY substr(purchased_at, 1, 10)
+       ORDER BY date ASC`
+    )
+    .all(startWeek.toISOString()) as Array<{
+    date: string;
+    purchaseTotal: number | null;
+    purchaseCount: number | null;
+    canceledCount: number | null;
+    paypayCount: number | null;
+    cashCount: number | null;
+  }>;
+
+  const byWeek = new Map<string, MonitorTimelinePoint>();
+  const toWeekStart = (isoDate: string) => {
+    const d = new Date(`${isoDate}T00:00:00.000Z`);
+    const dow = (d.getUTCDay() + 6) % 7;
+    d.setUTCDate(d.getUTCDate() - dow);
+    return d.toISOString().slice(0, 10);
+  };
+
+  for (const r of rows) {
+    const weekStart = toWeekStart(r.date);
+    const prev = byWeek.get(weekStart) ?? {
+      date: weekStart,
+      purchaseTotal: 0,
+      purchaseCount: 0,
+      canceledCount: 0,
+      paypayCount: 0,
+      cashCount: 0,
+    };
+    prev.purchaseTotal += Number(r.purchaseTotal ?? 0);
+    prev.purchaseCount += Number(r.purchaseCount ?? 0);
+    prev.canceledCount += Number(r.canceledCount ?? 0);
+    prev.paypayCount += Number(r.paypayCount ?? 0);
+    prev.cashCount += Number(r.cashCount ?? 0);
+    byWeek.set(weekStart, prev);
+  }
+
+  const points: MonitorTimelinePoint[] = [];
+  for (let i = 0; i < weekCount; i += 1) {
+    const d = new Date(startWeek);
+    d.setUTCDate(startWeek.getUTCDate() + i * 7);
+    const key = d.toISOString().slice(0, 10);
+    points.push(
+      byWeek.get(key) ?? {
+        date: key,
+        purchaseTotal: 0,
+        purchaseCount: 0,
+        canceledCount: 0,
+        paypayCount: 0,
+        cashCount: 0,
+      }
+    );
+  }
+  return points;
+}
+
+export function listItemAnalytics(db: Database.Database, days: number = 30): ItemAnalyticsPoint[] {
+  const span = Math.max(2, Math.min(365, Math.floor(days)));
+  const start = new Date();
+  start.setUTCHours(0, 0, 0, 0);
+  start.setUTCDate(start.getUTCDate() - (span - 1));
+
+  return db
+    .prepare(
+      `SELECT
+         i.item_id as itemId,
+         i.name as name,
+         i.price as currentPrice,
+         i.stock as stock,
+         COALESCE(SUM(CASE WHEN p.status = 'COMPLETED' THEN pi.quantity ELSE 0 END), 0) as quantity,
+         COALESCE(SUM(CASE WHEN p.status = 'COMPLETED' THEN pi.subtotal ELSE 0 END), 0) as revenue,
+         COALESCE(AVG(CASE WHEN p.status = 'COMPLETED' THEN pi.unit_price END), i.price) as avgUnitPrice
+       FROM items i
+       LEFT JOIN purchase_items pi ON pi.item_id = i.item_id
+       LEFT JOIN purchases p ON p.purchase_id = pi.purchase_id AND p.purchased_at >= ?
+       GROUP BY i.item_id, i.name, i.price, i.stock
+       ORDER BY quantity DESC, revenue DESC, i.name ASC`
+    )
+    .all(start.toISOString()) as ItemAnalyticsPoint[];
+}
+
+export function getFinanceSnapshot(db: Database.Database, date: string): FinanceSnapshotRow | null {
+  const row = db
+    .prepare(
+      `SELECT date, recorded_purchase_total as recordedPurchaseTotal, shipping_fee as shippingFee,
+              pool_fund as poolFund, note, updated_at as updatedAt
+       FROM finance_snapshots
+       WHERE date = ?`
+    )
+    .get(date) as FinanceSnapshotRow | undefined;
+  return row ?? null;
+}
+
+export function upsertFinanceSnapshot(
+  db: Database.Database,
+  data: { date: string; recordedPurchaseTotal: number; shippingFee: number; poolFund: number; note?: string | null }
+) {
+  db.prepare(
+    `INSERT INTO finance_snapshots (date, recorded_purchase_total, shipping_fee, pool_fund, note, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?)
+     ON CONFLICT(date) DO UPDATE SET
+       recorded_purchase_total = excluded.recorded_purchase_total,
+       shipping_fee = excluded.shipping_fee,
+       pool_fund = excluded.pool_fund,
+       note = excluded.note,
+       updated_at = excluded.updated_at`
+  ).run(
+    data.date,
+    Math.max(0, Math.floor(data.recordedPurchaseTotal)),
+    Math.max(0, Math.floor(data.shippingFee)),
+    Math.max(0, Math.floor(data.poolFund)),
+    data.note?.trim() || null,
+    new Date().toISOString()
+  );
+}
+
+export function applyTaxToAllItems(db: Database.Database, ratePercent: number): { updated: number } {
+  const safeRate = Math.max(0, Math.min(100, ratePercent));
+  const factor = 1 + safeRate / 100;
+  const result = db
+    .prepare(
+      `UPDATE items
+       SET cost_price = CAST(ROUND((cost_price * ?) / 10.0, 0) * 10 AS INTEGER),
+           price = CAST(ROUND(((CAST(ROUND((cost_price * ?) / 10.0, 0) * 10 AS INTEGER)) * 1.1) / 10.0, 0) * 10 AS INTEGER)`
+    )
+    .run(factor, factor);
+  return { updated: result.changes };
 }
 
 export type SupplyRequestRow = {
@@ -587,6 +897,22 @@ export function updateSupplyRequestStatus(
 ): boolean {
   const r = db.prepare(`UPDATE supply_requests SET status = ? WHERE request_id = ?`).run(status, requestId);
   return r.changes === 1;
+}
+
+export function insertItemFeedback(
+  db: Database.Database,
+  data: { itemId: string; feedbackType: "LIKE"; source: "pos" | "mobile" }
+): { feedbackId: string } {
+  const item = db.prepare(`SELECT item_id as itemId FROM items WHERE item_id = ? AND is_active = 1`).get(data.itemId) as
+    | { itemId: string }
+    | undefined;
+  if (!item) throw new Error("ITEM_NOT_FOUND");
+  const feedbackId = nanoid();
+  db.prepare(
+    `INSERT INTO item_feedbacks (feedback_id, item_id, feedback_type, source, created_at)
+     VALUES (?, ?, ?, ?, ?)`
+  ).run(feedbackId, data.itemId, data.feedbackType, data.source, new Date().toISOString());
+  return { feedbackId };
 }
 
 export type StockEventRow = {
@@ -704,6 +1030,30 @@ export function cancelPurchase(
   return { canceled: true };
 }
 
+export function deletePurchase(db: Database.Database, purchaseId: string): { deleted: boolean; restoredStock: boolean } {
+  const purchase = db
+    .prepare(`SELECT status FROM purchases WHERE purchase_id = ?`)
+    .get(purchaseId) as { status: string } | undefined;
+  if (!purchase) throw new Error("PURCHASE_NOT_FOUND");
+
+  const rows = db
+    .prepare(`SELECT item_id as itemId, quantity FROM purchase_items WHERE purchase_id = ?`)
+    .all(purchaseId) as { itemId: string; quantity: number }[];
+
+  const shouldRestore = purchase.status === "COMPLETED";
+  const tx = db.transaction(() => {
+    if (shouldRestore) {
+      const incStock = db.prepare(`UPDATE items SET stock = stock + ? WHERE item_id = ?`);
+      for (const r of rows) {
+        incStock.run(r.quantity, r.itemId);
+      }
+    }
+    db.prepare(`DELETE FROM purchases WHERE purchase_id = ?`).run(purchaseId);
+  });
+  tx();
+  return { deleted: true, restoredStock: shouldRestore };
+}
+
 export type OperationLogRow = {
   operationId: string;
   action: string;
@@ -745,4 +1095,57 @@ export function listStockAlerts(db: Database.Database): StockAlertRow[] {
       (it.alertCondition === "EQ" ? it.stock === it.alertThreshold : it.stock <= it.alertThreshold);
     return { ...it, isAlerting };
   });
+}
+
+export type ItemFeedbackSummaryRow = {
+  itemId: string;
+  name: string;
+  likeCount: number;
+  lastFeedbackAt: string | null;
+};
+
+export type ItemFeedbackRecentRow = {
+  feedbackId: string;
+  itemId: string;
+  itemName: string;
+  feedbackType: "LIKE";
+  source: string;
+  createdAt: string;
+};
+
+export function listItemFeedbackSummary(db: Database.Database, days: number = 30): ItemFeedbackSummaryRow[] {
+  const span = Math.max(1, Math.min(365, Math.floor(days)));
+  const from = new Date(Date.now() - span * 24 * 60 * 60 * 1000).toISOString();
+  return db
+    .prepare(
+      `SELECT
+         i.item_id as itemId,
+         i.name as name,
+         COUNT(f.feedback_id) as likeCount,
+         MAX(f.created_at) as lastFeedbackAt
+       FROM item_feedbacks f
+       JOIN items i ON i.item_id = f.item_id
+       WHERE f.feedback_type = 'LIKE' AND f.created_at >= ?
+       GROUP BY i.item_id, i.name
+       ORDER BY likeCount DESC, lastFeedbackAt DESC, i.name ASC`
+    )
+    .all(from) as ItemFeedbackSummaryRow[];
+}
+
+export function listItemFeedbackRecent(db: Database.Database, limit: number = 100): ItemFeedbackRecentRow[] {
+  return db
+    .prepare(
+      `SELECT
+         f.feedback_id as feedbackId,
+         f.item_id as itemId,
+         i.name as itemName,
+         f.feedback_type as feedbackType,
+         f.source as source,
+         f.created_at as createdAt
+       FROM item_feedbacks f
+       JOIN items i ON i.item_id = f.item_id
+       ORDER BY f.created_at DESC
+       LIMIT ?`
+    )
+    .all(Math.max(1, Math.min(500, Math.floor(limit)))) as ItemFeedbackRecentRow[];
 }

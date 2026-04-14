@@ -1,7 +1,15 @@
 import { useEffect, useState } from "react";
 import { flushSync } from "react-dom";
 import { Link, useLocation, useNavigate } from "react-router-dom";
-import { fetchBuyers, fetchItems, fetchSettings, postPurchase, type PurchaseDetail } from "../api";
+import {
+  fetchBuyers,
+  fetchItems,
+  fetchSettings,
+  postItemFeedback,
+  postPurchase,
+  postSupplyRequest,
+  type PurchaseDetail,
+} from "../api";
 import { useCart } from "../cart";
 import { useCheckout } from "../checkout";
 import { useIdleReset } from "../useIdleReset";
@@ -30,6 +38,7 @@ export function Shop({
   const [submitting, setSubmitting] = useState(false);
   const [stockError, setStockError] = useState<string | null>(null);
   const [paymentWarn, setPaymentWarn] = useState<string | null>(null);
+  const [feedbackMessageByItem, setFeedbackMessageByItem] = useState<Record<string, string>>({});
 
   useIdleReset(true, onIdleReset);
 
@@ -110,6 +119,40 @@ export function Shop({
     void complete();
   };
 
+  const showFeedbackMessage = (itemId: string, message: string) => {
+    setFeedbackMessageByItem((prev) => ({ ...prev, [itemId]: message }));
+    window.setTimeout(() => {
+      setFeedbackMessageByItem((prev) => {
+        if (prev[itemId] !== message) return prev;
+        const next = { ...prev };
+        delete next[itemId];
+        return next;
+      });
+    }, 3500);
+  };
+
+  const handleLike = async (item: { itemId: string; name: string }) => {
+    try {
+      await postItemFeedback({ itemId: item.itemId, feedbackType: "LIKE", source: "pos" });
+      showFeedbackMessage(item.itemId, `「${item.name}」に高評価しました`);
+    } catch {
+      showFeedbackMessage(item.itemId, "高評価の送信に失敗しました");
+    }
+  };
+
+  const handleRestockRequest = async (item: { itemId: string; name: string }) => {
+    try {
+      await postSupplyRequest({
+        body: `${item.name}を再入荷してほしいです`,
+        requesterName: "POS端末",
+        source: "pos",
+      });
+      showFeedbackMessage(item.itemId, `「${item.name}」の再入荷をリクエストしました`);
+    } catch {
+      showFeedbackMessage(item.itemId, "再入荷リクエストの送信に失敗しました");
+    }
+  };
+
   return (
     <div className="page shop">
       <header className="topbar shop-topbar">
@@ -175,7 +218,7 @@ export function Shop({
                       }}
                     >
                       <div className="product-thumb">
-                        <img src={FIXED_PRODUCT_IMAGE_URL} alt="" />
+                        <img src={it.imageUrl ?? FIXED_PRODUCT_IMAGE_URL} alt={it.name} />
                       </div>
                       <div className="product-meta">
                         <div className="name">{it.name}</div>
@@ -235,6 +278,21 @@ export function Shop({
                             削除
                           </button>
                         </div>
+                        <div className="shop-feedback-actions">
+                          <button type="button" className="shop-feedback-btn" onClick={() => void handleLike(l)}>
+                            高評価
+                          </button>
+                          <button
+                            type="button"
+                            className="shop-feedback-btn secondary"
+                            onClick={() => void handleRestockRequest(l)}
+                          >
+                            再入荷リクエスト
+                          </button>
+                        </div>
+                        {feedbackMessageByItem[l.itemId] && (
+                          <p className="shop-feedback-message">{feedbackMessageByItem[l.itemId]}</p>
+                        )}
                       </li>
                     ))}
                   </ul>
@@ -377,6 +435,21 @@ export function Shop({
                           削除
                         </button>
                       </div>
+                      <div className="shop-feedback-actions">
+                        <button type="button" className="shop-feedback-btn" onClick={() => void handleLike(l)}>
+                          高評価
+                        </button>
+                        <button
+                          type="button"
+                          className="shop-feedback-btn secondary"
+                          onClick={() => void handleRestockRequest(l)}
+                        >
+                          再入荷リクエスト
+                        </button>
+                      </div>
+                      {feedbackMessageByItem[l.itemId] && (
+                        <p className="shop-feedback-message">{feedbackMessageByItem[l.itemId]}</p>
+                      )}
                     </li>
                   ))}
                 </ul>

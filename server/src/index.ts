@@ -10,23 +10,37 @@ import {
   cancelPurchase,
   completePurchase,
   getPurchase,
+  getFinanceSnapshot,
   getSetting,
   listAdminOperationLogs,
   listAllBuyers,
   listAllItems,
   listHeavyBuyersForSale,
   listBuyersForSale,
+  listPurchasesPaged,
   listItemsForSale,
+  listItemAnalytics,
+  listItemFeedbackRecent,
+  listItemFeedbackSummary,
+  listMonitorTimeline,
   listPurchasesByDate,
+  countPurchases,
   listStockAlerts,
   listStockEvents,
+  monitorMetricsForDate,
+  totalRevenueAllTime,
   openDb,
+  applyTaxToAllItems,
   setSetting,
   statsForDate,
   insertSupplyRequest,
+  insertItemFeedback,
   listSupplyRequests,
   updateSupplyRequestStatus,
+  deleteBuyer,
+  deletePurchase,
   upsertBuyer,
+  upsertFinanceSnapshot,
   upsertItem,
 } from "./db.js";
 import { adminLoginHandler, adminLogout, requireAdmin } from "./auth.js";
@@ -67,6 +81,9 @@ app.get("/api/settings", (_req, res) => {
 });
 
 app.get("/api/items", (_req, res) => {
+  res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
+  res.setHeader("Pragma", "no-cache");
+  res.setHeader("Expires", "0");
   res.json({ items: listItemsForSale(db) });
 });
 
@@ -86,6 +103,30 @@ app.post("/api/supply-requests", (req, res) => {
   } catch (e) {
     const code = e instanceof Error ? e.message : "ERROR";
     if (code === "INVALID_SUPPLY_REQUEST") {
+      res.status(400).json({ error: code });
+      return;
+    }
+    res.status(500).json({ error: "SERVER_ERROR" });
+  }
+});
+
+app.post("/api/item-feedbacks", (req, res) => {
+  const body = req.body as { itemId?: string; feedbackType?: string; source?: string };
+  const feedbackType = body.feedbackType === "LIKE" ? "LIKE" : null;
+  if (!body.itemId || !feedbackType) {
+    res.status(400).json({ error: "BAD_REQUEST" });
+    return;
+  }
+  try {
+    const result = insertItemFeedback(db, {
+      itemId: body.itemId,
+      feedbackType,
+      source: body.source === "mobile" ? "mobile" : "pos",
+    });
+    res.status(201).json(result);
+  } catch (e) {
+    const code = e instanceof Error ? e.message : "ERROR";
+    if (code === "ITEM_NOT_FOUND") {
       res.status(400).json({ error: code });
       return;
     }
@@ -135,7 +176,8 @@ app.put("/api/admin/items/:itemId", requireAdmin, (req, res) => {
   const param = String(req.params.itemId);
   const body = req.body as {
     name: string;
-    price: number;
+    costPrice?: number;
+    price?: number;
     stock: number;
     isActive: boolean;
     imageUrl: string | null;
@@ -147,7 +189,8 @@ app.put("/api/admin/items/:itemId", requireAdmin, (req, res) => {
   const itemId = upsertItem(db, {
     itemId: param === "new" ? undefined : param,
     name: body.name,
-    price: Math.floor(body.price),
+    costPrice: Number(body.costPrice ?? body.price ?? 0),
+    price: Number(body.price),
     stock: Math.floor(body.stock),
     isActive: !!body.isActive,
     imageUrl: body.imageUrl ?? null,
@@ -169,7 +212,8 @@ app.put("/api/admin/items/:itemId", requireAdmin, (req, res) => {
 app.post("/api/admin/items", requireAdmin, (req, res) => {
   const body = req.body as {
     name: string;
-    price: number;
+    costPrice?: number;
+    price?: number;
     stock: number;
     isActive: boolean;
     imageUrl: string | null;
@@ -180,7 +224,8 @@ app.post("/api/admin/items", requireAdmin, (req, res) => {
   };
   const itemId = upsertItem(db, {
     name: body.name,
-    price: Math.floor(body.price),
+    costPrice: Number(body.costPrice ?? body.price ?? 0),
+    price: Number(body.price),
     stock: Math.floor(body.stock),
     isActive: !!body.isActive,
     imageUrl: body.imageUrl ?? null,
@@ -199,54 +244,221 @@ app.post("/api/admin/items", requireAdmin, (req, res) => {
   res.json({ itemId });
 });
 
+app.post("/api/admin/items/bulk-upsert", requireAdmin, (req, res) => {
+  const body = req.body as {
+    items?: Array<{
+      itemId?: string;
+      name?: string;
+      costPrice?: number;
+      price?: number;
+      stock?: number;
+      isActive?: boolean;
+      imageUrl?: string | null;
+      displayOrder?: number;
+      alertEnabled?: boolean;
+      alertThreshold?: number;
+      alertCondition?: "LTE" | "EQ";
+    }>;
+  };
+
+  const rows = Array.isArray(body.items) ? body.items : [];
+  if (rows.length === 0) {
+    res.status(400).json({ error: "EMPTY_ITEMS" });
+    return;
+  }
+
+  for (const row of rows) {
+    const rowCostPrice = Number(row.costPrice ?? row.price);
+    if (!row.name || !Number.isFinite(rowCostPrice) || !Number.isFinite(row.stock)) {
+      res.status(400).json({ error: "BAD_ITEM_ROW" });
+      return;
+    }
+  }
+
+  let updated = 0;
+  for (const row of rows) {
+    const itemId = upsertItem(db, {
+      itemId: row.itemId,
+      name: String(row.name),
+      costPrice: Number(row.costPrice ?? row.price ?? 0),
+      price: Number(row.price),
+      stock: Math.floor(Number(row.stock)),
+      isActive: row.isActive !== false,
+      imageUrl: row.imageUrl ?? null,
+      displayOrder: Math.floor(Number(row.displayOrder ?? 0)),
+      alertEnabled: row.alertEnabled !== false,
+      alertThreshold: Math.floor(Number(row.alertThreshold ?? 3)),
+      alertCondition: row.alertCondition === "EQ" ? "EQ" : "LTE",
+    });
+    addAdminOperationLog(db, {
+      action: "BULK_UPSERT_ITEM",
+      targetType: "ITEM",
+      targetId: itemId,
+      detail: JSON.stringify({ name: row.name, stock: Math.floor(Number(row.stock)) }),
+      actor: "admin",
+    });
+    updated += 1;
+  }
+
+  res.json({ updated });
+});
+
 app.get("/api/admin/buyers", requireAdmin, (_req, res) => {
   res.json({ buyers: listAllBuyers(db) });
 });
 
 app.put("/api/admin/buyers/:buyerId", requireAdmin, (req, res) => {
   const param = String(req.params.buyerId);
-  const body = req.body as { name: string; photoUrl: string | null; isActive: boolean };
-  const buyerId = upsertBuyer(db, {
-    buyerId: param === "new" ? undefined : param,
-    name: body.name,
-    photoUrl: body.photoUrl ?? null,
-    isActive: !!body.isActive,
-  });
-  addAdminOperationLog(db, {
-    action: "UPSERT_BUYER",
-    targetType: "BUYER",
-    targetId: buyerId,
-    detail: JSON.stringify({ name: body.name }),
-    actor: "admin",
-  });
-  res.json({ buyerId });
+  const body = req.body as { name: string; photoUrl: string | null; affiliation?: string | null; isActive: boolean };
+  try {
+    const buyerId = upsertBuyer(db, {
+      buyerId: param === "new" ? undefined : param,
+      name: body.name,
+      photoUrl: body.photoUrl ?? null,
+      affiliation: body.affiliation ?? null,
+      isActive: !!body.isActive,
+    });
+    addAdminOperationLog(db, {
+      action: "UPSERT_BUYER",
+      targetType: "BUYER",
+      targetId: buyerId,
+      detail: JSON.stringify({ name: body.name }),
+      actor: "admin",
+    });
+    res.json({ buyerId });
+  } catch (e) {
+    const code = e instanceof Error ? e.message : "ERROR";
+    if (code === "DUPLICATE_BUYER_NAME" || code === "INVALID_BUYER_NAME") {
+      res.status(409).json({ error: code });
+      return;
+    }
+    res.status(500).json({ error: "SERVER_ERROR" });
+  }
 });
 
 app.post("/api/admin/buyers", requireAdmin, (req, res) => {
-  const body = req.body as { name: string; photoUrl: string | null; isActive: boolean };
-  const buyerId = upsertBuyer(db, {
-    name: body.name,
-    photoUrl: body.photoUrl ?? null,
-    isActive: !!body.isActive,
-  });
+  const body = req.body as { name: string; photoUrl: string | null; affiliation?: string | null; isActive: boolean };
+  try {
+    const buyerId = upsertBuyer(db, {
+      name: body.name,
+      photoUrl: body.photoUrl ?? null,
+      affiliation: body.affiliation ?? null,
+      isActive: !!body.isActive,
+    });
+    addAdminOperationLog(db, {
+      action: "CREATE_BUYER",
+      targetType: "BUYER",
+      targetId: buyerId,
+      detail: JSON.stringify({ name: body.name }),
+      actor: "admin",
+    });
+    res.json({ buyerId });
+  } catch (e) {
+    const code = e instanceof Error ? e.message : "ERROR";
+    if (code === "DUPLICATE_BUYER_NAME" || code === "INVALID_BUYER_NAME") {
+      res.status(409).json({ error: code });
+      return;
+    }
+    res.status(500).json({ error: "SERVER_ERROR" });
+  }
+});
+
+app.delete("/api/admin/buyers/:buyerId", requireAdmin, (req, res) => {
+  const buyerId = String(req.params.buyerId);
+  const deleted = deleteBuyer(db, buyerId);
+  if (!deleted) {
+    res.status(404).json({ error: "NOT_FOUND" });
+    return;
+  }
   addAdminOperationLog(db, {
-    action: "CREATE_BUYER",
+    action: "DELETE_BUYER",
     targetType: "BUYER",
     targetId: buyerId,
-    detail: JSON.stringify({ name: body.name }),
     actor: "admin",
   });
-  res.json({ buyerId });
+  res.json({ deleted: true });
 });
 
 app.get("/api/admin/purchases", requireAdmin, (req, res) => {
-  const date = (req.query.date as string) ?? new Date().toISOString().slice(0, 10);
-  res.json({ date, purchases: listPurchasesByDate(db, date) });
+  const limit = Number(req.query.limit ?? 20);
+  const offset = Number(req.query.offset ?? 0);
+  const purchases = listPurchasesPaged(db, Number.isFinite(limit) ? limit : 20, Number.isFinite(offset) ? offset : 0);
+  const total = countPurchases(db);
+  res.json({ purchases, total, limit: Math.max(1, Math.min(100, Math.floor(limit))), offset: Math.max(0, Math.floor(offset)) });
 });
 
 app.get("/api/admin/stats", requireAdmin, (req, res) => {
   const date = (req.query.date as string) ?? new Date().toISOString().slice(0, 10);
   res.json({ date, stats: statsForDate(db, date) });
+});
+
+app.get("/api/admin/monitor", requireAdmin, (req, res) => {
+  const date = (req.query.date as string) ?? new Date().toISOString().slice(0, 10);
+  const metrics = monitorMetricsForDate(db, date);
+  const snapshot = getFinanceSnapshot(db, date);
+  const totalRevenue = totalRevenueAllTime(db);
+  res.json({ date, metrics, snapshot, totalRevenue });
+});
+
+app.get("/api/admin/monitor/timeline", requireAdmin, (req, res) => {
+  const days = Number(req.query.days ?? 14);
+  const points = listMonitorTimeline(db, Number.isFinite(days) ? days : 14);
+  res.json({ points });
+});
+
+app.get("/api/admin/monitor/analytics", requireAdmin, (req, res) => {
+  const days = Number(req.query.days ?? 30);
+  const safeDays = Number.isFinite(days) ? days : 30;
+  const timeline = listMonitorTimeline(db, safeDays);
+  const items = listItemAnalytics(db, safeDays);
+  res.json({ days: safeDays, timeline, items });
+});
+
+app.put("/api/admin/monitor", requireAdmin, (req, res) => {
+  const body = req.body as {
+    date?: string;
+    recordedPurchaseTotal?: number;
+    shippingFee?: number;
+    poolFund?: number;
+    note?: string | null;
+  };
+  const date = String(body.date ?? "").trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+    res.status(400).json({ error: "BAD_DATE" });
+    return;
+  }
+  upsertFinanceSnapshot(db, {
+    date,
+    recordedPurchaseTotal: Number(body.recordedPurchaseTotal ?? 0),
+    shippingFee: Number(body.shippingFee ?? 0),
+    poolFund: Number(body.poolFund ?? 0),
+    note: body.note ?? null,
+  });
+  addAdminOperationLog(db, {
+    action: "UPSERT_FINANCE_SNAPSHOT",
+    targetType: "FINANCE",
+    targetId: date,
+    detail: JSON.stringify({
+      recordedPurchaseTotal: Number(body.recordedPurchaseTotal ?? 0),
+      shippingFee: Number(body.shippingFee ?? 0),
+      poolFund: Number(body.poolFund ?? 0),
+    }),
+    actor: "admin",
+  });
+  res.json({ ok: true });
+});
+
+app.post("/api/admin/items/apply-tax", requireAdmin, (req, res) => {
+  const body = req.body as { ratePercent?: number };
+  const ratePercent = Number(body.ratePercent ?? 10);
+  const result = applyTaxToAllItems(db, ratePercent);
+  addAdminOperationLog(db, {
+    action: "APPLY_TAX_TO_ITEMS",
+    targetType: "ITEM",
+    detail: JSON.stringify({ ratePercent, updated: result.updated }),
+    actor: "admin",
+  });
+  res.json(result);
 });
 
 app.get("/api/admin/stock-alerts", requireAdmin, (_req, res) => {
@@ -316,6 +528,28 @@ app.post("/api/admin/purchases/:purchaseId/cancel", requireAdmin, (req, res) => 
   }
 });
 
+app.delete("/api/admin/purchases/:purchaseId", requireAdmin, (req, res) => {
+  const purchaseId = String(req.params.purchaseId);
+  try {
+    const result = deletePurchase(db, purchaseId);
+    addAdminOperationLog(db, {
+      action: "DELETE_PURCHASE",
+      targetType: "PURCHASE",
+      targetId: purchaseId,
+      detail: JSON.stringify(result),
+      actor: "admin",
+    });
+    res.json(result);
+  } catch (e) {
+    const code = e instanceof Error ? e.message : "ERROR";
+    if (code === "PURCHASE_NOT_FOUND") {
+      res.status(404).json({ error: code });
+      return;
+    }
+    res.status(500).json({ error: "SERVER_ERROR" });
+  }
+});
+
 app.get("/api/admin/supply-requests", requireAdmin, (_req, res) => {
   res.json({ requests: listSupplyRequests(db) });
 });
@@ -346,6 +580,17 @@ app.patch("/api/admin/supply-requests/:requestId", requireAdmin, (req, res) => {
 app.get("/api/admin/operation-logs", requireAdmin, (req, res) => {
   const limit = Number(req.query.limit ?? 300);
   res.json({ logs: listAdminOperationLogs(db, Number.isFinite(limit) ? limit : 300) });
+});
+
+app.get("/api/admin/item-feedbacks", requireAdmin, (req, res) => {
+  const days = Number(req.query.days ?? 30);
+  const limit = Number(req.query.limit ?? 80);
+  const safeDays = Number.isFinite(days) ? days : 30;
+  const safeLimit = Number.isFinite(limit) ? limit : 80;
+  res.json({
+    summary: listItemFeedbackSummary(db, safeDays),
+    recent: listItemFeedbackRecent(db, safeLimit),
+  });
 });
 
 app.put("/api/admin/settings", requireAdmin, (req, res) => {

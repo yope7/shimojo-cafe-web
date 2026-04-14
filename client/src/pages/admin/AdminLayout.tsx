@@ -39,6 +39,9 @@ export function AdminLayout() {
           <NavLink to="/admin/history" className={({ isActive }) => (isActive ? "active" : "")}>
             履歴・集計
           </NavLink>
+          <NavLink to="/admin/monitor" className={({ isActive }) => (isActive ? "active" : "")}>
+            収益モニター
+          </NavLink>
           <NavLink to="/admin/inventory-ops" className={({ isActive }) => (isActive ? "active" : "")}>
             在庫アラート/履歴
           </NavLink>
@@ -47,6 +50,9 @@ export function AdminLayout() {
           </NavLink>
           <NavLink to="/admin/supply-requests" className={({ isActive }) => (isActive ? "active" : "")}>
             仕入れ依頼
+          </NavLink>
+          <NavLink to="/admin/feedback" className={({ isActive }) => (isActive ? "active" : "")}>
+            高評価
           </NavLink>
           <NavLink to="/admin/settings" className={({ isActive }) => (isActive ? "active" : "")}>
             設定

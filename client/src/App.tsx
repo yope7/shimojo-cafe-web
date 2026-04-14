@@ -11,6 +11,8 @@ import { AdminInventoryOps } from "./pages/admin/AdminInventoryOps";
 import { AdminOperationLogs } from "./pages/admin/AdminOperationLogs";
 import { AdminSettings } from "./pages/admin/AdminSettings";
 import { AdminSupplyRequests } from "./pages/admin/AdminSupplyRequests";
+import { AdminMonitor } from "./pages/admin/AdminMonitor";
+import { AdminFeedback } from "./pages/admin/AdminFeedback";
 import { SupplyRequest } from "./pages/SupplyRequest";
 import { useCart, CartProvider } from "./cart";
 import { useCheckout, CheckoutProvider } from "./checkout";
@@ -37,10 +39,12 @@ function AppRoutes() {
         <Route path="items" element={<AdminItems />} />
         <Route path="buyers" element={<AdminBuyers />} />
         <Route path="history" element={<AdminHistory />} />
+        <Route path="monitor" element={<AdminMonitor />} />
         <Route path="inventory-ops" element={<AdminInventoryOps />} />
         <Route path="operation-logs" element={<AdminOperationLogs />} />
         <Route path="settings" element={<AdminSettings />} />
         <Route path="supply-requests" element={<AdminSupplyRequests />} />
+        <Route path="feedback" element={<AdminFeedback />} />
       </Route>
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>

@@ -1,42 +1,67 @@
 import { useEffect, useState } from "react";
-import { adminCancelPurchase, adminPurchases, adminStats } from "../../api";
+import { adminCancelPurchase, adminDeletePurchase, adminPurchases, adminStats } from "../../api";
 
-function todayStr() {
-  return new Date().toISOString().slice(0, 10);
-}
+const PAGE_SIZE = 20;
 
 export function AdminHistory() {
-  const [date, setDate] = useState(todayStr);
+  const [page, setPage] = useState(0);
   const [loading, setLoading] = useState(true);
   const [purchases, setPurchases] = useState<Awaited<ReturnType<typeof adminPurchases>>["purchases"]>(
     []
   );
+  const [total, setTotal] = useState(0);
   const [stats, setStats] = useState<Awaited<ReturnType<typeof adminStats>>["stats"] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [workingPurchaseId, setWorkingPurchaseId] = useState<string | null>(null);
 
+  const reload = async () => {
+    const [p, s] = await Promise.all([adminPurchases(PAGE_SIZE, page * PAGE_SIZE), adminStats(new Date().toISOString().slice(0, 10))]);
+    if (p.purchases.length === 0 && p.total > 0 && page > 0) {
+      setPage((prev) => Math.max(0, prev - 1));
+      return;
+    }
+    setPurchases(p.purchases);
+    setTotal(p.total);
+    setStats(s.stats);
+  };
+
   useEffect(() => {
     setLoading(true);
     setError(null);
-    Promise.all([adminPurchases(date), adminStats(date)])
+    Promise.all([adminPurchases(PAGE_SIZE, page * PAGE_SIZE), adminStats(new Date().toISOString().slice(0, 10))])
       .then(([p, s]) => {
         setPurchases(p.purchases);
+        setTotal(p.total);
         setStats(s.stats);
       })
       .catch(() => setError("読み込みに失敗しました"))
       .finally(() => setLoading(false));
-  }, [date]);
+  }, [page]);
 
   const cancelPurchase = async (purchaseId: string) => {
     setError(null);
     setWorkingPurchaseId(purchaseId);
     try {
       await adminCancelPurchase(purchaseId);
-      const [p, s] = await Promise.all([adminPurchases(date), adminStats(date)]);
-      setPurchases(p.purchases);
-      setStats(s.stats);
+      await reload();
+      window.dispatchEvent(new Event("analytics:refresh"));
     } catch {
       setError("キャンセルに失敗しました");
+    } finally {
+      setWorkingPurchaseId(null);
+    }
+  };
+
+  const removePurchase = async (purchaseId: string) => {
+    if (!window.confirm("この購入履歴を削除します。取り消せません。よろしいですか？")) return;
+    setError(null);
+    setWorkingPurchaseId(purchaseId);
+    try {
+      await adminDeletePurchase(purchaseId);
+      await reload();
+      window.dispatchEvent(new Event("analytics:refresh"));
+    } catch {
+      setError("履歴の削除に失敗しました");
     } finally {
       setWorkingPurchaseId(null);
     }
@@ -45,10 +70,6 @@ export function AdminHistory() {
   return (
     <div className="admin-page">
       <h1>履歴・集計</h1>
-      <label className="inline">
-        日付{" "}
-        <input type="date" value={date} onChange={(e) => setDate(e.target.value)} className="input" />
-      </label>
 
       {error && <p className="banner error">{error}</p>}
       {loading && <p className="muted">読み込み中…</p>}
@@ -87,6 +108,22 @@ export function AdminHistory() {
 
       <section>
         <h2>購入履歴</h2>
+        <div className="row-actions single" style={{ marginTop: 0, marginBottom: 8 }}>
+          <button type="button" className="btn secondary small" disabled={page <= 0} onClick={() => setPage((p) => p - 1)}>
+            新しい履歴
+          </button>
+          <button
+            type="button"
+            className="btn secondary small"
+            disabled={(page + 1) * PAGE_SIZE >= total}
+            onClick={() => setPage((p) => p + 1)}
+          >
+            古い履歴
+          </button>
+          <span className="muted">
+            {total === 0 ? "0件" : `${page * PAGE_SIZE + 1} - ${Math.min((page + 1) * PAGE_SIZE, total)} / ${total}件`}
+          </span>
+        </div>
         <div className="history-list">
           {purchases.map((p) => (
             <article key={p.purchaseId} className="history-card">
@@ -116,11 +153,32 @@ export function AdminHistory() {
                   >
                     購入をキャンセル（在庫戻し）
                   </button>
+                  <button
+                    type="button"
+                    className="btn secondary small"
+                    disabled={workingPurchaseId === p.purchaseId}
+                    onClick={() => void removePurchase(p.purchaseId)}
+                    style={{ marginLeft: 8 }}
+                  >
+                    履歴を削除
+                  </button>
+                </div>
+              )}
+              {p.status === "CANCELED" && (
+                <div className="history-actions">
+                  <button
+                    type="button"
+                    className="btn secondary small"
+                    disabled={workingPurchaseId === p.purchaseId}
+                    onClick={() => void removePurchase(p.purchaseId)}
+                  >
+                    履歴を削除
+                  </button>
                 </div>
               )}
             </article>
           ))}
-          {purchases.length === 0 && !loading && <p className="muted">この日の履歴はありません</p>}
+          {purchases.length === 0 && !loading && <p className="muted">履歴はありません</p>}
         </div>
       </section>
     </div>

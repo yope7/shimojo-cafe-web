@@ -1,6 +1,7 @@
 export type Item = {
   itemId: string;
   name: string;
+  costPrice: number;
   price: number;
   stock: number;
   isActive: boolean;
@@ -15,6 +16,7 @@ export type Buyer = {
   buyerId: string;
   name: string;
   photoUrl: string | null;
+  affiliation: string | null;
   isActive: boolean;
 };
 

@@ -16,7 +16,7 @@ export async function fetchSettings() {
 }
 
 export async function fetchItems() {
-  return json<{ items: Item[] }>(fetch("/api/items"));
+  return json<{ items: Item[] }>(fetch("/api/items", { cache: "no-store" }));
 }
 
 export async function fetchBuyers() {
@@ -70,13 +70,13 @@ export async function adminLogout() {
 }
 
 export async function adminItems() {
-  return json<{ items: Item[] }>(adminFetch("/api/admin/items"));
+  return json<{ items: Item[] }>(adminFetch("/api/admin/items", { cache: "no-store" }));
 }
 
 export async function adminSaveItem(
   item: Partial<Item> & {
     name: string;
-    price: number;
+    costPrice: number;
     stock: number;
     isActive: boolean;
     displayOrder: number;
@@ -92,6 +92,7 @@ export async function adminSaveItem(
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         name: item.name,
+        costPrice: item.costPrice,
         price: item.price,
         stock: item.stock,
         isActive: item.isActive,
@@ -101,6 +102,29 @@ export async function adminSaveItem(
         alertThreshold: item.alertThreshold,
         alertCondition: item.alertCondition,
       }),
+    })
+  );
+}
+
+export async function adminBulkUpsertItems(
+  items: Array<
+    Partial<Item> & {
+      name: string;
+      costPrice: number;
+      stock: number;
+      isActive: boolean;
+      displayOrder: number;
+      alertEnabled: boolean;
+      alertThreshold: number;
+      alertCondition: "LTE" | "EQ";
+    }
+  >
+) {
+  return json<{ updated: number }>(
+    adminFetch("/api/admin/items/bulk-upsert", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ items }),
     })
   );
 }
@@ -120,15 +144,24 @@ export async function adminSaveBuyer(
       body: JSON.stringify({
         name: buyer.name,
         photoUrl: buyer.photoUrl ?? null,
+        affiliation: buyer.affiliation ?? null,
         isActive: buyer.isActive,
       }),
     })
   );
 }
 
-export async function adminPurchases(date: string) {
-  return json<{ date: string; purchases: PurchaseDetail[] }>(
-    adminFetch(`/api/admin/purchases?date=${encodeURIComponent(date)}`)
+export async function adminDeleteBuyer(buyerId: string) {
+  return json<{ deleted: boolean }>(
+    adminFetch(`/api/admin/buyers/${encodeURIComponent(buyerId)}`, {
+      method: "DELETE",
+    })
+  );
+}
+
+export async function adminPurchases(limit: number = 20, offset: number = 0) {
+  return json<{ purchases: PurchaseDetail[]; total: number; limit: number; offset: number }>(
+    adminFetch(`/api/admin/purchases?limit=${encodeURIComponent(String(limit))}&offset=${encodeURIComponent(String(offset))}`)
   );
 }
 
@@ -142,6 +175,90 @@ export async function adminStats(date: string) {
       byItem: { itemId: string; name: string; quantity: number }[];
     };
   }>(adminFetch(`/api/admin/stats?date=${encodeURIComponent(date)}`));
+}
+
+export type AdminMonitorResponse = {
+  date: string;
+  totalRevenue: number;
+  metrics: {
+    purchaseTotal: number;
+    purchaseCount: number;
+    canceledCount: number;
+  };
+  snapshot: {
+    date: string;
+    recordedPurchaseTotal: number;
+    shippingFee: number;
+    poolFund: number;
+    note: string | null;
+    updatedAt: string;
+  } | null;
+};
+
+export async function adminMonitor(date: string) {
+  return json<AdminMonitorResponse>(adminFetch(`/api/admin/monitor?date=${encodeURIComponent(date)}`));
+}
+
+export async function adminMonitorTimeline(days: number = 14) {
+  return json<{
+    points: Array<{
+      date: string;
+      purchaseTotal: number;
+      purchaseCount: number;
+      canceledCount: number;
+      paypayCount: number;
+      cashCount: number;
+    }>;
+  }>(adminFetch(`/api/admin/monitor/timeline?days=${encodeURIComponent(String(days))}`));
+}
+
+export async function adminMonitorAnalytics(days: number = 30) {
+  return json<{
+    days: number;
+    timeline: Array<{
+      date: string;
+      purchaseTotal: number;
+      purchaseCount: number;
+      canceledCount: number;
+      paypayCount: number;
+      cashCount: number;
+    }>;
+    items: Array<{
+      itemId: string;
+      name: string;
+      quantity: number;
+      revenue: number;
+      avgUnitPrice: number;
+      currentPrice: number;
+      stock: number;
+    }>;
+  }>(adminFetch(`/api/admin/monitor/analytics?days=${encodeURIComponent(String(days))}`));
+}
+
+export async function adminSaveMonitor(body: {
+  date: string;
+  recordedPurchaseTotal: number;
+  shippingFee: number;
+  poolFund: number;
+  note?: string | null;
+}) {
+  return json<{ ok: boolean }>(
+    adminFetch("/api/admin/monitor", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    })
+  );
+}
+
+export async function adminApplyTaxToItems(ratePercent: number = 10) {
+  return json<{ updated: number }>(
+    adminFetch("/api/admin/items/apply-tax", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ratePercent }),
+    })
+  );
 }
 
 export async function adminSettings(body: {
@@ -174,6 +291,20 @@ export async function postSupplyRequest(body: {
 }) {
   return json<{ requestId: string }>(
     fetch("/api/supply-requests", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    })
+  );
+}
+
+export async function postItemFeedback(body: {
+  itemId: string;
+  feedbackType: "LIKE";
+  source: "pos" | "mobile";
+}) {
+  return json<{ feedbackId: string }>(
+    fetch("/api/item-feedbacks", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
@@ -239,6 +370,14 @@ export async function adminCancelPurchase(purchaseId: string) {
   );
 }
 
+export async function adminDeletePurchase(purchaseId: string) {
+  return json<{ deleted: boolean; restoredStock: boolean }>(
+    adminFetch(`/api/admin/purchases/${encodeURIComponent(purchaseId)}`, {
+      method: "DELETE",
+    })
+  );
+}
+
 export type OperationLog = {
   operationId: string;
   action: string;
@@ -252,5 +391,23 @@ export type OperationLog = {
 export async function adminOperationLogs(limit: number = 300) {
   return json<{ logs: OperationLog[] }>(
     adminFetch(`/api/admin/operation-logs?limit=${encodeURIComponent(String(limit))}`)
+  );
+}
+
+export async function adminItemFeedbacks(days: number = 30, limit: number = 80) {
+  return json<{
+    summary: Array<{ itemId: string; name: string; likeCount: number; lastFeedbackAt: string | null }>;
+    recent: Array<{
+      feedbackId: string;
+      itemId: string;
+      itemName: string;
+      feedbackType: "LIKE";
+      source: string;
+      createdAt: string;
+    }>;
+  }>(
+    adminFetch(
+      `/api/admin/item-feedbacks?days=${encodeURIComponent(String(days))}&limit=${encodeURIComponent(String(limit))}`
+    )
   );
 }

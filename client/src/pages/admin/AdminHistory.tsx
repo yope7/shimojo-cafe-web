@@ -1,5 +1,11 @@
 import { useEffect, useState } from "react";
-import { adminCancelPurchase, adminDeletePurchase, adminPurchases, adminStats } from "../../api";
+import {
+  adminCancelPurchase,
+  adminDeletePurchase,
+  adminPurchases,
+  adminStats,
+  type AdminStatsPreset,
+} from "../../api";
 
 const PAGE_SIZE = 20;
 
@@ -11,11 +17,27 @@ export function AdminHistory() {
   );
   const [total, setTotal] = useState(0);
   const [stats, setStats] = useState<Awaited<ReturnType<typeof adminStats>>["stats"] | null>(null);
+  const [statsPreset, setStatsPreset] = useState<AdminStatsPreset>("all");
   const [error, setError] = useState<string | null>(null);
   const [workingPurchaseId, setWorkingPurchaseId] = useState<string | null>(null);
 
+  const statsPeriodCaption = (() => {
+    switch (statsPreset) {
+      case "all":
+        return "全期間の完了済み購入を対象にしています（キャンセルは含みません）。";
+      case "today":
+        return "今日（日本時間）の完了済み購入を対象にしています（キャンセルは含みません）。";
+      case "7":
+        return "直近7日の完了済み購入を対象にしています（キャンセルは含みません）。";
+      case "30":
+        return "直近30日の完了済み購入を対象にしています（キャンセルは含みません）。";
+      default:
+        return "";
+    }
+  })();
+
   const reload = async () => {
-    const [p, s] = await Promise.all([adminPurchases(PAGE_SIZE, page * PAGE_SIZE), adminStats(new Date().toISOString().slice(0, 10))]);
+    const [p, s] = await Promise.all([adminPurchases(PAGE_SIZE, page * PAGE_SIZE), adminStats(statsPreset)]);
     if (p.purchases.length === 0 && p.total > 0 && page > 0) {
       setPage((prev) => Math.max(0, prev - 1));
       return;
@@ -28,7 +50,7 @@ export function AdminHistory() {
   useEffect(() => {
     setLoading(true);
     setError(null);
-    Promise.all([adminPurchases(PAGE_SIZE, page * PAGE_SIZE), adminStats(new Date().toISOString().slice(0, 10))])
+    Promise.all([adminPurchases(PAGE_SIZE, page * PAGE_SIZE), adminStats(statsPreset)])
       .then(([p, s]) => {
         setPurchases(p.purchases);
         setTotal(p.total);
@@ -36,7 +58,7 @@ export function AdminHistory() {
       })
       .catch(() => setError("読み込みに失敗しました"))
       .finally(() => setLoading(false));
-  }, [page]);
+  }, [page, statsPreset]);
 
   const cancelPurchase = async (purchaseId: string) => {
     setError(null);
@@ -77,6 +99,24 @@ export function AdminHistory() {
       {stats && !loading && (
         <section className="stats">
           <h2>集計</h2>
+          <div className="inline" style={{ marginBottom: 12 }}>
+            <label>
+              集計期間
+              <select
+                className="input"
+                value={statsPreset}
+                onChange={(e) => setStatsPreset(e.target.value as AdminStatsPreset)}
+              >
+                <option value="all">全期間</option>
+                <option value="today">今日（日本時間）</option>
+                <option value="7">直近7日</option>
+                <option value="30">直近30日</option>
+              </select>
+            </label>
+          </div>
+          <p className="muted" style={{ marginTop: 0, marginBottom: 12 }}>
+            {statsPeriodCaption}
+          </p>
           <div className="stat-grid">
             <div className="stat-card">
               <div className="label">PayPay 件数</div>

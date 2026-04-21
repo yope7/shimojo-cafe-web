@@ -15,12 +15,20 @@ export async function fetchSettings() {
   );
 }
 
+export type Bestseller7d = { itemId: string; rank: number; quantitySold: number };
+
 export async function fetchItems() {
-  return json<{ items: Item[] }>(fetch("/api/items", { cache: "no-store" }));
+  return json<{ items: Item[]; bestsellers7d: Bestseller7d[] }>(
+    fetch("/api/items", { cache: "no-store" })
+  );
 }
 
 export async function fetchBuyers() {
-  return json<{ buyers: Buyer[]; heavyBuyers: Buyer[] }>(fetch("/api/buyers"));
+  return json<{
+    buyers: Buyer[];
+    heavyBuyers: Buyer[];
+    weeklyBuyerUsage: { buyerId: string; purchaseCount: number; rank: number }[];
+  }>(fetch("/api/buyers"));
 }
 
 export async function postPurchase(body: {
@@ -165,16 +173,18 @@ export async function adminPurchases(limit: number = 20, offset: number = 0) {
   );
 }
 
-export async function adminStats(date: string) {
+export type AdminStatsPreset = "all" | "today" | "7" | "30";
+
+export async function adminStats(preset: AdminStatsPreset = "all") {
   return json<{
-    date: string;
+    preset: AdminStatsPreset;
     stats: {
       byPayment: { PAYPAY: number; CASH: number };
       anonymousCount: number;
       namedCount: number;
       byItem: { itemId: string; name: string; quantity: number }[];
     };
-  }>(adminFetch(`/api/admin/stats?date=${encodeURIComponent(date)}`));
+  }>(adminFetch(`/api/admin/stats?preset=${encodeURIComponent(preset)}`));
 }
 
 export type AdminMonitorResponse = {
@@ -312,6 +322,20 @@ export async function postItemFeedback(body: {
   );
 }
 
+export async function postFeedback(body: {
+  body: string;
+  senderName?: string;
+  source: "pos" | "mobile";
+}) {
+  return json<{ feedbackMessageId: string }>(
+    fetch("/api/feedbacks", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    })
+  );
+}
+
 export async function adminSupplyRequests() {
   return json<{ requests: SupplyRequest[] }>(adminFetch("/api/admin/supply-requests"));
 }
@@ -409,5 +433,30 @@ export async function adminItemFeedbacks(days: number = 30, limit: number = 80) 
     adminFetch(
       `/api/admin/item-feedbacks?days=${encodeURIComponent(String(days))}&limit=${encodeURIComponent(String(limit))}`
     )
+  );
+}
+
+export type FeedbackMessage = {
+  feedbackMessageId: string;
+  body: string;
+  senderName: string | null;
+  source: string;
+  createdAt: string;
+  status: "OPEN" | "DONE";
+};
+
+export async function adminFeedbacks(limit: number = 200) {
+  return json<{ messages: FeedbackMessage[] }>(
+    adminFetch(`/api/admin/feedbacks?limit=${encodeURIComponent(String(limit))}`)
+  );
+}
+
+export async function adminUpdateFeedbackStatus(feedbackMessageId: string, status: "OPEN" | "DONE") {
+  return json<{ ok: boolean }>(
+    adminFetch(`/api/admin/feedbacks/${encodeURIComponent(feedbackMessageId)}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ status }),
+    })
   );
 }

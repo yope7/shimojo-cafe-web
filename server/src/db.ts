@@ -93,6 +93,17 @@ function initSchema(db: Database.Database) {
 
     CREATE INDEX IF NOT EXISTS idx_item_feedbacks_created ON item_feedbacks(created_at);
 
+    CREATE TABLE IF NOT EXISTS feedback_messages (
+      feedback_message_id TEXT PRIMARY KEY,
+      body TEXT NOT NULL,
+      sender_name TEXT,
+      source TEXT NOT NULL DEFAULT 'pos',
+      created_at TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'OPEN'
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_feedback_messages_created ON feedback_messages(created_at);
+
     CREATE TABLE IF NOT EXISTS stock_events (
       stock_event_id TEXT PRIMARY KEY,
       item_id TEXT NOT NULL,
@@ -142,6 +153,13 @@ function initSchema(db: Database.Database) {
     WHERE cost_price IS NULL OR cost_price <= 0
   `);
   db.exec(`UPDATE items SET price = CAST(ROUND((cost_price * 1.1) / 10.0, 0) * 10 AS INTEGER)`);
+
+  // 静的ファイルを public/IMG/items → public/images/items に移した既存 DB のパスを追随
+  db.exec(`
+    UPDATE items
+    SET image_url = REPLACE(image_url, '/IMG/items/', '/images/items/')
+    WHERE image_url IS NOT NULL AND image_url LIKE '%/IMG/items/%'
+  `);
 }
 
 function ensureColumn(db: Database.Database, table: string, columnDef: string) {
@@ -214,6 +232,12 @@ export type BuyerRow = {
   isActive: boolean;
 };
 
+export type BuyerWeeklyUsageRow = {
+  buyerId: string;
+  purchaseCount: number;
+  rank: number;
+};
+
 function normItem(r: Record<string, unknown>): ItemRow {
   return {
     itemId: String(r.itemId),
@@ -240,6 +264,40 @@ export function listItemsForSale(db: Database.Database): ItemRow[] {
     )
     .all() as Record<string, unknown>[];
   return rows.map(normItem);
+}
+
+/** 直近 `days` 日間の販売個数合計が多い販売中商品 Top N（1 位から連番 rank） */
+export type Bestseller7dRow = { itemId: string; rank: number; quantitySold: number };
+
+export function listBestsellerItemsRollingDays(
+  db: Database.Database,
+  days: number,
+  limit: number
+): Bestseller7dRow[] {
+  const d = Math.max(1, Math.min(366, Math.floor(days)));
+  const from = new Date(Date.now() - d * 86400000).toISOString();
+  const to = new Date().toISOString();
+  const lim = Math.max(1, Math.min(10, Math.floor(limit)));
+  const rows = db
+    .prepare(
+      `SELECT pi.item_id as itemId, SUM(pi.quantity) as quantitySold
+       FROM purchase_items pi
+       INNER JOIN purchases p ON pi.purchase_id = p.purchase_id
+       INNER JOIN items i ON i.item_id = pi.item_id
+       WHERE p.status = 'COMPLETED'
+         AND p.purchased_at >= ? AND p.purchased_at <= ?
+         AND i.is_active = 1
+       GROUP BY pi.item_id
+       ORDER BY quantitySold DESC
+       LIMIT ?`
+    )
+    .all(from, to, lim) as { itemId: string; quantitySold: number }[];
+
+  return rows.map((r, idx) => ({
+    itemId: r.itemId,
+    rank: idx + 1,
+    quantitySold: Number(r.quantitySold),
+  }));
 }
 
 export function listAllItems(db: Database.Database): ItemRow[] {
@@ -269,7 +327,21 @@ export function listBuyersForSale(db: Database.Database): BuyerRow[] {
     .prepare(
       `SELECT buyer_id as buyerId, name, photo_url as photoUrl, is_active as isActive
               ,affiliation as affiliation
-       FROM buyers WHERE is_active = 1 ORDER BY name ASC`
+       FROM buyers
+       WHERE is_active = 1
+       ORDER BY
+         CASE affiliation
+           WHEN 'D' THEN 1
+           WHEN 'M2' THEN 2
+           WHEN 'M1' THEN 3
+           WHEN 'B4' THEN 4
+           WHEN 'B3' THEN 5
+           WHEN '教員' THEN 6
+           WHEN '秘書' THEN 7
+           WHEN 'その他' THEN 8
+           ELSE 9
+         END ASC,
+         name ASC`
     )
     .all() as Record<string, unknown>[];
   return rows.map(normBuyer);
@@ -294,10 +366,54 @@ export function listHeavyBuyersForSale(db: Database.Database, days: number = 7, 
          LIMIT ?
        ) heavy ON heavy.buyerId = b.buyer_id
        WHERE b.is_active = 1
-       ORDER BY b.name ASC`
+       ORDER BY
+         CASE b.affiliation
+           WHEN 'D' THEN 1
+           WHEN 'M2' THEN 2
+           WHEN 'M1' THEN 3
+           WHEN 'B4' THEN 4
+           WHEN 'B3' THEN 5
+           WHEN '教員' THEN 6
+           WHEN '秘書' THEN 7
+           WHEN 'その他' THEN 8
+           ELSE 9
+         END ASC,
+         b.name ASC`
     )
     .all(from, Math.max(1, limit)) as Record<string, unknown>[];
   return rows.map(normBuyer);
+}
+
+export function listBuyerUsageRollingDays(
+  db: Database.Database,
+  days: number = 7,
+  limit: number = 10
+): BuyerWeeklyUsageRow[] {
+  const from = new Date(Date.now() - Math.max(1, days) * 24 * 60 * 60 * 1000).toISOString();
+  const rows = db
+    .prepare(
+      `SELECT
+         p.buyer_id as buyerId,
+         COUNT(*) as purchaseCount,
+         MAX(p.purchased_at) as lastPurchasedAt
+       FROM purchases p
+       JOIN buyers b ON b.buyer_id = p.buyer_id
+       WHERE p.status = 'COMPLETED'
+         AND p.buyer_type = 'NAMED'
+         AND p.buyer_id IS NOT NULL
+         AND p.purchased_at >= ?
+         AND b.is_active = 1
+       GROUP BY p.buyer_id
+       ORDER BY purchaseCount DESC, lastPurchasedAt DESC
+       LIMIT ?`
+    )
+    .all(from, Math.max(1, limit)) as Array<{ buyerId: string; purchaseCount: number }>;
+
+  return rows.map((row, index) => ({
+    buyerId: row.buyerId,
+    purchaseCount: Number(row.purchaseCount),
+    rank: index + 1,
+  }));
 }
 
 export function listAllBuyers(db: Database.Database): BuyerRow[] {
@@ -628,18 +744,27 @@ export type FinanceSnapshotRow = {
   updatedAt: string;
 };
 
-export function statsForDate(db: Database.Database, date: string): Stats {
-  const purchases = db
-    .prepare(
-      `SELECT purchase_id, payment_method, buyer_type FROM purchases
-       WHERE purchased_at >= ? AND purchased_at < ? AND status = 'COMPLETED'`
-    )
-    .all(`${date}T00:00:00.000Z`, `${date}T23:59:59.999Z`) as {
-    purchase_id: string;
-    payment_method: string;
-    buyer_type: string;
-  }[];
+export type AdminStatsPreset = "all" | "today" | "7" | "30";
 
+function jstTodayYmd(): string {
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Tokyo",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(new Date());
+}
+
+/** 日本時間の暦日 1 日分を UTC の半開区間 [start, endExclusive) に変換 */
+function tokyoDayRangeUtc(ymd: string): { start: string; endExclusive: string } {
+  const start = new Date(`${ymd}T00:00:00+09:00`).toISOString();
+  const endExclusive = new Date(new Date(`${ymd}T00:00:00+09:00`).getTime() + 24 * 60 * 60 * 1000).toISOString();
+  return { start, endExclusive };
+}
+
+function aggregateStatsFromPurchases(
+  purchases: { purchase_id: string; payment_method: string; buyer_type: string }[]
+): Pick<Stats, "byPayment" | "anonymousCount" | "namedCount"> {
   const byPayment = { PAYPAY: 0, CASH: 0 };
   let anonymousCount = 0;
   let namedCount = 0;
@@ -649,20 +774,90 @@ export function statsForDate(db: Database.Database, date: string): Stats {
     if (p.buyer_type === "ANONYMOUS") anonymousCount++;
     else namedCount++;
   }
+  return { byPayment, anonymousCount, namedCount };
+}
 
+/** 管理画面「集計」用。preset は購入日時（purchased_at）で絞り込み、いずれも完了済みのみ。 */
+export function statsForAdminPreset(db: Database.Database, preset: AdminStatsPreset): Stats {
+  if (preset === "all") {
+    const purchases = db
+      .prepare(
+        `SELECT purchase_id, payment_method, buyer_type FROM purchases
+         WHERE status = 'COMPLETED'`
+      )
+      .all() as {
+      purchase_id: string;
+      payment_method: string;
+      buyer_type: string;
+    }[];
+    const base = aggregateStatsFromPurchases(purchases);
+    const itemRows = db
+      .prepare(
+        `SELECT pi.item_id as itemId, i.name as name, SUM(pi.quantity) as quantity
+         FROM purchase_items pi
+         JOIN purchases p ON pi.purchase_id = p.purchase_id
+         JOIN items i ON pi.item_id = i.item_id
+         WHERE p.status = 'COMPLETED'
+         GROUP BY pi.item_id, i.name
+         ORDER BY quantity DESC`
+      )
+      .all() as { itemId: string; name: string; quantity: number }[];
+    return { ...base, byItem: itemRows };
+  }
+
+  if (preset === "today") {
+    const { start, endExclusive } = tokyoDayRangeUtc(jstTodayYmd());
+    const purchases = db
+      .prepare(
+        `SELECT purchase_id, payment_method, buyer_type FROM purchases
+         WHERE status = 'COMPLETED' AND purchased_at >= ? AND purchased_at < ?`
+      )
+      .all(start, endExclusive) as {
+      purchase_id: string;
+      payment_method: string;
+      buyer_type: string;
+    }[];
+    const base = aggregateStatsFromPurchases(purchases);
+    const itemRows = db
+      .prepare(
+        `SELECT pi.item_id as itemId, i.name as name, SUM(pi.quantity) as quantity
+         FROM purchase_items pi
+         JOIN purchases p ON pi.purchase_id = p.purchase_id
+         JOIN items i ON pi.item_id = i.item_id
+         WHERE p.status = 'COMPLETED' AND p.purchased_at >= ? AND p.purchased_at < ?
+         GROUP BY pi.item_id, i.name
+         ORDER BY quantity DESC`
+      )
+      .all(start, endExclusive) as { itemId: string; name: string; quantity: number }[];
+    return { ...base, byItem: itemRows };
+  }
+
+  const days = preset === "7" ? 7 : 30;
+  const from = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
+  const to = new Date().toISOString();
+  const purchases = db
+    .prepare(
+      `SELECT purchase_id, payment_method, buyer_type FROM purchases
+       WHERE status = 'COMPLETED' AND purchased_at >= ? AND purchased_at <= ?`
+    )
+    .all(from, to) as {
+    purchase_id: string;
+    payment_method: string;
+    buyer_type: string;
+  }[];
+  const base = aggregateStatsFromPurchases(purchases);
   const itemRows = db
     .prepare(
       `SELECT pi.item_id as itemId, i.name as name, SUM(pi.quantity) as quantity
        FROM purchase_items pi
        JOIN purchases p ON pi.purchase_id = p.purchase_id
        JOIN items i ON pi.item_id = i.item_id
-       WHERE p.purchased_at >= ? AND p.purchased_at < ? AND p.status = 'COMPLETED'
+       WHERE p.status = 'COMPLETED' AND p.purchased_at >= ? AND p.purchased_at <= ?
        GROUP BY pi.item_id, i.name
        ORDER BY quantity DESC`
     )
-    .all(`${date}T00:00:00.000Z`, `${date}T23:59:59.999Z`) as { itemId: string; name: string; quantity: number }[];
-
-  return { byPayment, anonymousCount, namedCount, byItem: itemRows };
+    .all(from, to) as { itemId: string; name: string; quantity: number }[];
+  return { ...base, byItem: itemRows };
 }
 
 export function monitorMetricsForDate(db: Database.Database, date: string): MonitorMetrics {
@@ -854,6 +1049,15 @@ export type SupplyRequestRow = {
   status: string;
 };
 
+export type FeedbackMessageRow = {
+  feedbackMessageId: string;
+  body: string;
+  senderName: string | null;
+  source: string;
+  createdAt: string;
+  status: "OPEN" | "DONE";
+};
+
 export function insertSupplyRequest(
   db: Database.Database,
   data: { body: string; requesterName: string; source: string }
@@ -913,6 +1117,49 @@ export function insertItemFeedback(
      VALUES (?, ?, ?, ?, ?)`
   ).run(feedbackId, data.itemId, data.feedbackType, data.source, new Date().toISOString());
   return { feedbackId };
+}
+
+export function insertFeedbackMessage(
+  db: Database.Database,
+  data: { body: string; senderName?: string; source: string }
+): { feedbackMessageId: string } {
+  const body = data.body.trim();
+  if (!body.length) throw new Error("INVALID_FEEDBACK_MESSAGE");
+  const source = data.source === "mobile" ? "mobile" : "pos";
+  const senderName = data.senderName?.trim() || null;
+  const feedbackMessageId = nanoid();
+  const createdAt = new Date().toISOString();
+  db.prepare(
+    `INSERT INTO feedback_messages (feedback_message_id, body, sender_name, source, created_at, status)
+     VALUES (?, ?, ?, ?, ?, 'OPEN')`
+  ).run(feedbackMessageId, body, senderName, source, createdAt);
+  return { feedbackMessageId };
+}
+
+export function listFeedbackMessages(db: Database.Database, limit: number = 200): FeedbackMessageRow[] {
+  return db
+    .prepare(
+      `SELECT
+         feedback_message_id as feedbackMessageId,
+         body,
+         sender_name as senderName,
+         source,
+         created_at as createdAt,
+         status
+       FROM feedback_messages
+       ORDER BY created_at DESC
+       LIMIT ?`
+    )
+    .all(Math.max(1, Math.min(1000, Math.floor(limit)))) as FeedbackMessageRow[];
+}
+
+export function updateFeedbackMessageStatus(
+  db: Database.Database,
+  feedbackMessageId: string,
+  status: "OPEN" | "DONE"
+): boolean {
+  const r = db.prepare(`UPDATE feedback_messages SET status = ? WHERE feedback_message_id = ?`).run(status, feedbackMessageId);
+  return r.changes === 1;
 }
 
 export type StockEventRow = {
@@ -1113,7 +1360,24 @@ export type ItemFeedbackRecentRow = {
   createdAt: string;
 };
 
+/** days <= 0 のときは期間を絞らず全件集計 */
 export function listItemFeedbackSummary(db: Database.Database, days: number = 30): ItemFeedbackSummaryRow[] {
+  if (days <= 0) {
+    return db
+      .prepare(
+        `SELECT
+           i.item_id as itemId,
+           i.name as name,
+           COUNT(f.feedback_id) as likeCount,
+           MAX(f.created_at) as lastFeedbackAt
+         FROM item_feedbacks f
+         JOIN items i ON i.item_id = f.item_id
+         WHERE f.feedback_type = 'LIKE'
+         GROUP BY i.item_id, i.name
+         ORDER BY likeCount DESC, lastFeedbackAt DESC, i.name ASC`
+      )
+      .all() as ItemFeedbackSummaryRow[];
+  }
   const span = Math.max(1, Math.min(365, Math.floor(days)));
   const from = new Date(Date.now() - span * 24 * 60 * 60 * 1000).toISOString();
   return db

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { flushSync } from "react-dom";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import {
@@ -8,14 +8,78 @@ import {
   postItemFeedback,
   postPurchase,
   postSupplyRequest,
+  type Bestseller7d,
   type PurchaseDetail,
 } from "../api";
+import { groupBuyersByTag } from "../buyerGroups";
 import { useCart } from "../cart";
 import { useCheckout } from "../checkout";
 import { useIdleReset } from "../useIdleReset";
-import type { Buyer, Item } from "../types";
+import type { Buyer, CartLine, Item } from "../types";
 
 const FIXED_PRODUCT_IMAGE_URL = "/images/cupramen-pro.jpg";
+
+const RANK_BADGE_SRC: Record<1 | 2 | 3, string> = {
+  1: "/images/rank/1st.svg",
+  2: "/images/rank/2nd.svg",
+  3: "/images/rank/3rd.svg",
+};
+
+type BuyerTier = 0 | 1 | 2;
+
+function ShopProductCard({
+  item: it,
+  lines,
+  onAdd,
+  rank,
+}: {
+  item: Item;
+  lines: CartLine[];
+  onAdd: (item: { itemId: string; name: string; price: number; stock: number }) => void;
+  rank?: 1 | 2 | 3;
+}) {
+  const soldOut = it.stock <= 0;
+  const inCart = lines.find((l) => l.itemId === it.itemId)?.quantity ?? 0;
+  const atStockLimit = !soldOut && inCart >= it.stock;
+  return (
+    <button
+      type="button"
+      className={`product-card ${soldOut ? "soldout" : ""} ${atStockLimit ? "at-cap" : ""}`}
+      disabled={soldOut || atStockLimit}
+      onClick={() => {
+        if (soldOut || atStockLimit) return;
+        onAdd({ itemId: it.itemId, name: it.name, price: it.price, stock: it.stock });
+      }}
+    >
+      <div className={`product-thumb ${rank != null ? "has-rank-badge" : ""}`}>
+        {rank != null && (
+          <img
+            className="product-rank-badge"
+            src={RANK_BADGE_SRC[rank]}
+            alt={`売れ筋 ${rank}位`}
+            width={44}
+            height={44}
+            decoding="async"
+          />
+        )}
+        <img src={it.imageUrl ?? FIXED_PRODUCT_IMAGE_URL} alt={it.name} />
+      </div>
+      <div className="product-meta">
+        <div className="name">{it.name}</div>
+        <div className="sub">
+          <span>¥{it.price}</span>
+          {soldOut ? (
+            <span className="stock zero">売り切れ</span>
+          ) : atStockLimit ? (
+            <span className="stock at-cap-label">在庫上限</span>
+          ) : (
+            <span className="stock">残 {it.stock}</span>
+          )}
+        </div>
+      </div>
+    </button>
+  );
+}
 
 export function Shop({
   onIdleReset,
@@ -28,8 +92,10 @@ export function Shop({
   const location = useLocation();
   const stockWarning = Boolean((location.state as { stockWarning?: boolean } | null)?.stockWarning);
   const [items, setItems] = useState<Item[]>([]);
+  const [bestsellers7d, setBestsellers7d] = useState<Bestseller7d[]>([]);
   const [buyers, setBuyers] = useState<Buyer[]>([]);
   const [heavyBuyers, setHeavyBuyers] = useState<Buyer[]>([]);
+  const [weeklyBuyerUsage, setWeeklyBuyerUsage] = useState<Array<{ buyerId: string; purchaseCount: number; rank: number }>>([]);
   const [error, setError] = useState<string | null>(null);
   const [mode, setMode] = useState<"cart" | "checkout">("cart");
   const [paypayText, setPaypayText] = useState("");
@@ -38,21 +104,42 @@ export function Shop({
   const [submitting, setSubmitting] = useState(false);
   const [stockError, setStockError] = useState<string | null>(null);
   const [paymentWarn, setPaymentWarn] = useState<string | null>(null);
+  const [confirmOpen, setConfirmOpen] = useState(false);
   const [feedbackMessageByItem, setFeedbackMessageByItem] = useState<Record<string, string>>({});
 
   useIdleReset(true, onIdleReset);
 
   useEffect(() => {
     fetchItems()
-      .then((r) => setItems(r.items))
+      .then((r) => {
+        setItems(r.items);
+        setBestsellers7d(r.bestsellers7d);
+      })
       .catch(() => setError("商品を読み込めませんでした"));
   }, []);
+
+  const bestsellerItemList = useMemo(() => {
+    return bestsellers7d
+      .map((b) => {
+        const item = items.find((i) => i.itemId === b.itemId);
+        if (!item) return null;
+        const rank = b.rank as 1 | 2 | 3;
+        return { item, rank };
+      })
+      .filter((x): x is { item: Item; rank: 1 | 2 | 3 } => x != null);
+  }, [bestsellers7d, items]);
+
+  const restItems = useMemo(() => {
+    const ids = new Set(bestsellers7d.map((b) => b.itemId));
+    return items.filter((i) => !ids.has(i.itemId));
+  }, [items, bestsellers7d]);
 
   useEffect(() => {
     fetchBuyers()
       .then((r) => {
         setBuyers(r.buyers);
         setHeavyBuyers(r.heavyBuyers ?? []);
+        setWeeklyBuyerUsage(r.weeklyBuyerUsage ?? []);
       })
       .catch(() => {
         // Ignore buyer list failures: payment can proceed anonymously.
@@ -71,9 +158,20 @@ export function Shop({
   }, [totalCount]);
 
   const instruction = paymentMethod === "PAYPAY" ? paypayText : paymentMethod === "CASH" ? cashText : "";
-  const heavyBuyerIds = new Set(heavyBuyers.map((b) => b.buyerId));
-  const otherBuyers = buyers.filter((b) => !heavyBuyerIds.has(b.buyerId));
-  const compactBuyerName = (name: string) => name.slice(0, 5);
+  const groupedOtherBuyers = groupBuyersByTag(buyers);
+  const compactBuyerName = (name: string) => name.replace(/[ \u3000]/g, "").slice(0, 5);
+  const buyerTierById = useMemo(() => {
+    const tierMap = new Map<string, BuyerTier>();
+    for (const row of weeklyBuyerUsage) {
+      if (row.rank === 1) {
+        tierMap.set(row.buyerId, 2);
+      } else if (row.rank === 2 || row.rank === 3) {
+        tierMap.set(row.buyerId, 1);
+      }
+    }
+    return tierMap;
+  }, [weeklyBuyerUsage]);
+  const buyerTierClass = (buyer: Buyer) => `tier-${buyerTierById.get(buyer.buyerId) ?? 0}`;
 
   const complete = async () => {
     if (!paymentMethod) return;
@@ -116,6 +214,12 @@ export function Shop({
       setPaymentWarn("支払い方法を選択してください。");
       return;
     }
+    setConfirmOpen(true);
+  };
+
+  const confirmComplete = () => {
+    if (submitting) return;
+    setConfirmOpen(false);
     void complete();
   };
 
@@ -153,17 +257,23 @@ export function Shop({
     }
   };
 
+  const goToCartStep = () => {
+    setMode("cart");
+  };
+
   return (
     <div className="page shop">
       <header className="topbar shop-topbar">
-        <h1>シモジョーカフェ</h1>
+        <button type="button" className="shop-title-btn" onClick={goToCartStep}>
+          <img className="shop-title-logo" src="/images/shimojocafe.png" alt="シモジョーカフェ" />
+        </button>
         <div className="shop-header-links">
           <Link to="/supply-request" className="shop-header-link">
             仕入依頼
           </Link>
-          <button type="button" className="shop-header-link" aria-disabled="true">
+          <Link to="/feedback" className="shop-header-link">
             フィードバック
-          </button>
+          </Link>
           <Link to="/admin/login" className="shop-header-link" aria-label="管理">
             管理
           </Link>
@@ -199,43 +309,33 @@ export function Shop({
       {mode === "cart" ? (
         <div className="shop-workspace">
           <section className="shop-products-panel">
-            <h2 className="shop-panel-title shop-products-panel-title">商品</h2>
+            {bestsellerItemList.length > 0 && (
+              <div className="shop-bestsellers-block">
+                <h3 className="shop-bestsellers-heading">売れ筋（過去7日・販売個数 Top3）</h3>
+                <div className="shop-bestseller-grid">
+                  {bestsellerItemList.map(({ item: it, rank }) => (
+                    <ShopProductCard
+                      key={`hit-${it.itemId}`}
+                      item={it}
+                      lines={lines}
+                      rank={rank}
+                      onAdd={addItem}
+                    />
+                  ))}
+                </div>
+              </div>
+            )}
+            <h2 className="shop-panel-title shop-products-panel-title">販売一覧</h2>
             <div className="shop-scroll">
+              {restItems.length === 0 && bestsellerItemList.length > 0 ? (
+                <p className="muted" style={{ margin: "0 0 0.5rem" }}>
+                  上記の Top3 以外に表示する販売中商品はありません。
+                </p>
+              ) : null}
               <div className="grid products">
-                {items.map((it) => {
-                  const soldOut = it.stock <= 0;
-                  const inCart = lines.find((l) => l.itemId === it.itemId)?.quantity ?? 0;
-                  const atStockLimit = !soldOut && inCart >= it.stock;
-                  return (
-                    <button
-                      key={it.itemId}
-                      type="button"
-                      className={`product-card ${soldOut ? "soldout" : ""} ${atStockLimit ? "at-cap" : ""}`}
-                      disabled={soldOut || atStockLimit}
-                      onClick={() => {
-                        if (soldOut || atStockLimit) return;
-                        addItem({ itemId: it.itemId, name: it.name, price: it.price, stock: it.stock });
-                      }}
-                    >
-                      <div className="product-thumb">
-                        <img src={it.imageUrl ?? FIXED_PRODUCT_IMAGE_URL} alt={it.name} />
-                      </div>
-                      <div className="product-meta">
-                        <div className="name">{it.name}</div>
-                        <div className="sub">
-                          <span>¥{it.price}</span>
-                          {soldOut ? (
-                            <span className="stock zero">売り切れ</span>
-                          ) : atStockLimit ? (
-                            <span className="stock at-cap-label">在庫上限</span>
-                          ) : (
-                            <span className="stock">残 {it.stock}</span>
-                          )}
-                        </div>
-                      </div>
-                    </button>
-                  );
-                })}
+                {restItems.map((it) => (
+                  <ShopProductCard key={it.itemId} item={it} lines={lines} onAdd={addItem} />
+                ))}
               </div>
             </div>
           </section>
@@ -339,7 +439,7 @@ export function Shop({
                           <button
                             key={b.buyerId}
                             type="button"
-                            className={`buyer-card ${buyerType === "NAMED" && buyerId === b.buyerId ? "selected" : ""}`}
+                            className={`buyer-card ${buyerTierClass(b)} ${buyerType === "NAMED" && buyerId === b.buyerId ? "selected" : ""}`}
                             title={b.name}
                             onClick={() => {
                               flushSync(() => {
@@ -355,24 +455,29 @@ export function Shop({
                       <p className="muted buyer-subhead">すべての購入者</p>
                     </>
                   )}
-                  <div className="grid buyers shop-buyer-grid-inline">
-                    {otherBuyers.map((b) => (
-                      <button
-                        key={b.buyerId}
-                        type="button"
-                        className={`buyer-card ${buyerType === "NAMED" && buyerId === b.buyerId ? "selected" : ""}`}
-                        title={b.name}
-                        onClick={() => {
-                          flushSync(() => {
-                            setBuyer("NAMED", b.buyerId);
-                          });
-                          setPaymentWarn(null);
-                        }}
-                      >
-                        <div className="name">{compactBuyerName(b.name)}</div>
-                      </button>
-                    ))}
-                  </div>
+                  {groupedOtherBuyers.map((group) => (
+                    <section key={group.tag}>
+                      <p className="muted buyer-subhead">{group.tag}</p>
+                      <div className="grid buyers shop-buyer-grid-inline">
+                        {group.buyers.map((b) => (
+                          <button
+                            key={b.buyerId}
+                            type="button"
+                            className={`buyer-card ${buyerTierClass(b)} ${buyerType === "NAMED" && buyerId === b.buyerId ? "selected" : ""}`}
+                            title={b.name}
+                            onClick={() => {
+                              flushSync(() => {
+                                setBuyer("NAMED", b.buyerId);
+                              });
+                              setPaymentWarn(null);
+                            }}
+                          >
+                            <div className="name">{compactBuyerName(b.name)}</div>
+                          </button>
+                        ))}
+                      </div>
+                    </section>
+                  ))}
                 </div>
               </section>
               <section className="instruction shop-checkout-payment">
@@ -467,9 +572,7 @@ export function Shop({
                   <button
                     type="button"
                     className="btn secondary large"
-                    onClick={() => {
-                      setMode("cart");
-                    }}
+                    onClick={goToCartStep}
                   >
                     カートへ戻る
                   </button>
@@ -485,6 +588,29 @@ export function Shop({
               </div>
             </div>
           </aside>
+        </div>
+      )}
+
+      {confirmOpen && (
+        <div className="confirm-overlay" role="presentation" onClick={() => setConfirmOpen(false)}>
+          <div
+            className="confirm-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="purchase-confirm-title"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h2 id="purchase-confirm-title">購入を確定しますか？</h2>
+            <p className="muted">合計金額: ¥{totalPrice.toLocaleString()}</p>
+            <div className="confirm-actions">
+              <button type="button" className="btn secondary" onClick={() => setConfirmOpen(false)} disabled={submitting}>
+                キャンセル
+              </button>
+              <button type="button" className="btn primary" onClick={confirmComplete} disabled={submitting}>
+                確定する
+              </button>
+            </div>
+          </div>
         </div>
       )}
 

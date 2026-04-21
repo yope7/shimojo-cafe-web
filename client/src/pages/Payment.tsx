@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { fetchBuyers, fetchSettings, postPurchase, type PurchaseDetail } from "../api";
+import { groupBuyersByTag } from "../buyerGroups";
 import { useCart } from "../cart";
 import { useCheckout } from "../checkout";
 import { useIdleReset } from "../useIdleReset";
@@ -27,6 +28,7 @@ export function Payment({ onIdleReset }: { onIdleReset: () => void }) {
       setTerminalId(s.terminalId);
     });
   }, []);
+  const buyerGroups = groupBuyersByTag(buyers);
 
   const instruction = paymentMethod === "PAYPAY" ? paypayText : paymentMethod === "CASH" ? cashText : "";
 
@@ -116,21 +118,29 @@ export function Payment({ onIdleReset }: { onIdleReset: () => void }) {
           <h2>購入者（任意）</h2>
           <p className="muted">選ばない場合は匿名購入になります。</p>
           {buyers.length > 0 && (
-            <div className="grid buyers payment-buyer-grid">
-              {buyers.map((b) => (
-                <button
-                  key={b.buyerId}
-                  type="button"
-                  className={`buyer-card ${buyerType === "NAMED" && buyerId === b.buyerId ? "selected" : ""}`}
-                  onClick={() => setBuyer("NAMED", b.buyerId)}
-                >
-                  <div className="avatar">
-                    {b.photoUrl ? <img src={b.photoUrl} alt="" /> : <span>{b.name.slice(0, 1)}</span>}
+            <>
+              {buyerGroups.map((group) => (
+                <section key={group.tag}>
+                  <p className="muted buyer-subhead">{group.tag}</p>
+                  <div className="grid buyers payment-buyer-grid">
+                    {group.buyers.map((b) => (
+                      <button
+                        key={b.buyerId}
+                        type="button"
+                        className={`buyer-card ${buyerType === "NAMED" && buyerId === b.buyerId ? "selected" : ""}`}
+                        onClick={() => setBuyer("NAMED", b.buyerId)}
+                      >
+                        <div className="avatar">
+                          {b.photoUrl ? <img src={b.photoUrl} alt="" /> : <span>{b.name.slice(0, 1)}</span>}
+                        </div>
+                        <div className="name">{b.name}</div>
+                        <div className="muted">{b.affiliation ?? "未設定"}</div>
+                      </button>
+                    ))}
                   </div>
-                  <div className="name">{b.name}</div>
-                </button>
+                </section>
               ))}
-            </div>
+            </>
           )}
         </section>
 

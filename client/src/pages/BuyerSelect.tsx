@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { flushSync } from "react-dom";
 import { Link, useNavigate } from "react-router-dom";
 import { fetchBuyers, fetchSettings, postPurchase, type PurchaseDetail } from "../api";
+import { groupBuyersByTag } from "../buyerGroups";
 import { useCart } from "../cart";
 import { useCheckout } from "../checkout";
 import { useIdleReset } from "../useIdleReset";
@@ -37,6 +38,7 @@ export function BuyerSelect({ onIdleReset }: { onIdleReset: () => void }) {
   }, []);
 
   const instruction = paymentMethod === "PAYPAY" ? paypayText : paymentMethod === "CASH" ? cashText : "";
+  const buyerGroups = groupBuyersByTag(buyers);
 
   const complete = async () => {
     if (!paymentMethod) return;
@@ -102,26 +104,32 @@ export function BuyerSelect({ onIdleReset }: { onIdleReset: () => void }) {
       {paymentWarn && <p className="banner error">{paymentWarn}</p>}
 
       <div className="buyer-scroll">
-        <div className="grid buyers">
-          {buyers.map((b) => (
-            <button
-              key={b.buyerId}
-              type="button"
-              className={`buyer-card ${buyerType === "NAMED" && buyerId === b.buyerId ? "selected" : ""}`}
-              onClick={() => {
-                flushSync(() => {
-                  setBuyer("NAMED", b.buyerId);
-                });
-                setPaymentWarn(null);
-              }}
-            >
-              <div className="avatar">
-                {b.photoUrl ? <img src={b.photoUrl} alt="" /> : <span>{b.name.slice(0, 1)}</span>}
-              </div>
-              <div className="name">{b.name}</div>
-            </button>
-          ))}
-        </div>
+        {buyerGroups.map((group) => (
+          <section key={group.tag}>
+            <p className="muted buyer-subhead">{group.tag}</p>
+            <div className="grid buyers">
+              {group.buyers.map((b) => (
+                <button
+                  key={b.buyerId}
+                  type="button"
+                  className={`buyer-card ${buyerType === "NAMED" && buyerId === b.buyerId ? "selected" : ""}`}
+                  onClick={() => {
+                    flushSync(() => {
+                      setBuyer("NAMED", b.buyerId);
+                    });
+                    setPaymentWarn(null);
+                  }}
+                >
+                  <div className="avatar">
+                    {b.photoUrl ? <img src={b.photoUrl} alt="" /> : <span>{b.name.slice(0, 1)}</span>}
+                  </div>
+                  <div className="name">{b.name}</div>
+                  <div className="muted">{b.affiliation ?? "未設定"}</div>
+                </button>
+              ))}
+            </div>
+          </section>
+        ))}
       </div>
 
       <section className="instruction buyer-instruction">

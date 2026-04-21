@@ -16,8 +16,10 @@ import {
   listAllBuyers,
   listAllItems,
   listHeavyBuyersForSale,
+  listBuyerUsageRollingDays,
   listBuyersForSale,
   listPurchasesPaged,
+  listBestsellerItemsRollingDays,
   listItemsForSale,
   listItemAnalytics,
   listItemFeedbackRecent,
@@ -32,10 +34,14 @@ import {
   openDb,
   applyTaxToAllItems,
   setSetting,
-  statsForDate,
+  statsForAdminPreset,
+  type AdminStatsPreset,
   insertSupplyRequest,
   insertItemFeedback,
+  insertFeedbackMessage,
+  listFeedbackMessages,
   listSupplyRequests,
+  updateFeedbackMessageStatus,
   updateSupplyRequestStatus,
   deleteBuyer,
   deletePurchase,
@@ -84,11 +90,17 @@ app.get("/api/items", (_req, res) => {
   res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
   res.setHeader("Pragma", "no-cache");
   res.setHeader("Expires", "0");
-  res.json({ items: listItemsForSale(db) });
+  const items = listItemsForSale(db);
+  const bestsellers7d = listBestsellerItemsRollingDays(db, 7, 3);
+  res.json({ items, bestsellers7d });
 });
 
 app.get("/api/buyers", (_req, res) => {
-  res.json({ buyers: listBuyersForSale(db), heavyBuyers: listHeavyBuyersForSale(db, 7, 5) });
+  res.json({
+    buyers: listBuyersForSale(db),
+    heavyBuyers: listHeavyBuyersForSale(db, 7, 5),
+    weeklyBuyerUsage: listBuyerUsageRollingDays(db, 7, 10),
+  });
 });
 
 app.post("/api/supply-requests", (req, res) => {
@@ -127,6 +139,25 @@ app.post("/api/item-feedbacks", (req, res) => {
   } catch (e) {
     const code = e instanceof Error ? e.message : "ERROR";
     if (code === "ITEM_NOT_FOUND") {
+      res.status(400).json({ error: code });
+      return;
+    }
+    res.status(500).json({ error: "SERVER_ERROR" });
+  }
+});
+
+app.post("/api/feedbacks", (req, res) => {
+  const body = req.body as { body?: string; senderName?: string; source?: string };
+  try {
+    const result = insertFeedbackMessage(db, {
+      body: body.body ?? "",
+      senderName: body.senderName ?? "",
+      source: body.source === "mobile" ? "mobile" : "pos",
+    });
+    res.status(201).json(result);
+  } catch (e) {
+    const code = e instanceof Error ? e.message : "ERROR";
+    if (code === "INVALID_FEEDBACK_MESSAGE") {
       res.status(400).json({ error: code });
       return;
     }
@@ -388,8 +419,10 @@ app.get("/api/admin/purchases", requireAdmin, (req, res) => {
 });
 
 app.get("/api/admin/stats", requireAdmin, (req, res) => {
-  const date = (req.query.date as string) ?? new Date().toISOString().slice(0, 10);
-  res.json({ date, stats: statsForDate(db, date) });
+  const raw = String(req.query.preset ?? "all");
+  const allowed = new Set(["all", "today", "7", "30"]);
+  const preset: AdminStatsPreset = allowed.has(raw) ? (raw as AdminStatsPreset) : "all";
+  res.json({ preset, stats: statsForAdminPreset(db, preset) });
 });
 
 app.get("/api/admin/monitor", requireAdmin, (req, res) => {
@@ -585,12 +618,42 @@ app.get("/api/admin/operation-logs", requireAdmin, (req, res) => {
 app.get("/api/admin/item-feedbacks", requireAdmin, (req, res) => {
   const days = Number(req.query.days ?? 30);
   const limit = Number(req.query.limit ?? 80);
-  const safeDays = Number.isFinite(days) ? days : 30;
+  // 0 以下は全期間集計（listItemFeedbackSummary 側で解釈）
+  const safeDays = Number.isFinite(days) ? Math.floor(days) : 30;
   const safeLimit = Number.isFinite(limit) ? limit : 80;
   res.json({
     summary: listItemFeedbackSummary(db, safeDays),
     recent: listItemFeedbackRecent(db, safeLimit),
   });
+});
+
+app.get("/api/admin/feedbacks", requireAdmin, (req, res) => {
+  const limit = Number(req.query.limit ?? 200);
+  const safeLimit = Number.isFinite(limit) ? limit : 200;
+  res.json({ messages: listFeedbackMessages(db, safeLimit) });
+});
+
+app.patch("/api/admin/feedbacks/:feedbackMessageId", requireAdmin, (req, res) => {
+  const id = String(req.params.feedbackMessageId);
+  const body = req.body as { status?: string };
+  const status = body.status === "DONE" ? "DONE" : body.status === "OPEN" ? "OPEN" : null;
+  if (!status) {
+    res.status(400).json({ error: "BAD_STATUS" });
+    return;
+  }
+  const ok = updateFeedbackMessageStatus(db, id, status);
+  if (!ok) {
+    res.status(404).json({ error: "NOT_FOUND" });
+    return;
+  }
+  addAdminOperationLog(db, {
+    action: "UPDATE_FEEDBACK_STATUS",
+    targetType: "FEEDBACK",
+    targetId: id,
+    detail: JSON.stringify({ status }),
+    actor: "admin",
+  });
+  res.json({ ok: true });
 });
 
 app.put("/api/admin/settings", requireAdmin, (req, res) => {

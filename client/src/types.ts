@@ -7,6 +7,7 @@ export type Item = {
   isActive: boolean;
   imageUrl: string | null;
   displayOrder: number;
+  category: "DRINK" | "SNACK" | "OTHER";
   alertEnabled: boolean;
   alertThreshold: number;
   alertCondition: "LTE" | "EQ";

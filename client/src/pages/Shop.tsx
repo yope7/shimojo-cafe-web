@@ -26,6 +26,29 @@ const RANK_BADGE_SRC: Record<1 | 2 | 3, string> = {
 };
 
 type BuyerTier = 0 | 1 | 2;
+type ItemCategory = "DRINK" | "SNACK" | "OTHER";
+
+const SHOP_CATEGORY_SECTIONS: Array<{ key: ItemCategory; title: string; subtitle: string }> = [
+  { key: "DRINK", title: "ドリンク", subtitle:"" },
+  { key: "SNACK", title: "お菓子", subtitle: "" },
+  { key: "OTHER", title: "その他", subtitle: "" },
+];
+
+const DONE_DEBUG_PURCHASE: PurchaseDetail = {
+  purchaseId: "debug-purchase",
+  purchasedAt: "2026-04-26T00:00:00.000Z",
+  totalPrice: 780,
+  paymentMethod: "PAYPAY",
+  buyerType: "NAMED",
+  buyerId: "debug-buyer-1",
+  buyerName: "デバッグ太郎",
+  terminalId: "DEBUG-TERM",
+  status: "COMPLETED",
+  items: [
+    { itemId: "debug-item-1", name: "コーヒー", quantity: 1, unitPrice: 180, subtotal: 180 },
+    { itemId: "debug-item-2", name: "カレー", quantity: 1, unitPrice: 600, subtotal: 600 },
+  ],
+};
 
 function ShopProductCard({
   item: it,
@@ -133,6 +156,15 @@ export function Shop({
     const ids = new Set(bestsellers7d.map((b) => b.itemId));
     return items.filter((i) => !ids.has(i.itemId));
   }, [items, bestsellers7d]);
+
+  const groupedRestItems = useMemo(() => {
+    const grouped: Record<ItemCategory, Item[]> = { DRINK: [], SNACK: [], OTHER: [] };
+    for (const item of restItems) {
+      const key = item.category ?? "OTHER";
+      grouped[key].push(item);
+    }
+    return grouped;
+  }, [restItems]);
 
   useEffect(() => {
     fetchBuyers()
@@ -274,6 +306,11 @@ export function Shop({
           <Link to="/feedback" className="shop-header-link">
             フィードバック
           </Link>
+          {import.meta.env.DEV && (
+            <Link to="/done" state={{ purchase: DONE_DEBUG_PURCHASE }} className="shop-header-link">
+              完了デバッグ
+            </Link>
+          )}
           <Link to="/admin/login" className="shop-header-link" aria-label="管理">
             管理
           </Link>
@@ -332,9 +369,23 @@ export function Shop({
                   上記の Top3 以外に表示する販売中商品はありません。
                 </p>
               ) : null}
-              <div className="grid products">
-                {restItems.map((it) => (
-                  <ShopProductCard key={it.itemId} item={it} lines={lines} onAdd={addItem} />
+              <div className="shop-category-sections">
+                {SHOP_CATEGORY_SECTIONS.map((section) => (
+                  <section key={section.key} className="shop-category-block">
+                    <header className="shop-category-header">
+                      <h3 className="shop-category-title">{section.title}</h3>
+                      <p className="shop-category-subtitle">{section.subtitle}</p>
+                    </header>
+                    {groupedRestItems[section.key].length === 0 ? (
+                      <p className="muted shop-category-empty">現在このカテゴリの商品はありません。</p>
+                    ) : (
+                      <div className="grid products">
+                        {groupedRestItems[section.key].map((it) => (
+                          <ShopProductCard key={it.itemId} item={it} lines={lines} onAdd={addItem} />
+                        ))}
+                      </div>
+                    )}
+                  </section>
                 ))}
               </div>
             </div>

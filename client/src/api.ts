@@ -81,6 +81,10 @@ export async function adminItems() {
   return json<{ items: Item[] }>(adminFetch("/api/admin/items", { cache: "no-store" }));
 }
 
+export async function adminItemImages() {
+  return json<{ images: string[] }>(adminFetch("/api/admin/item-images", { cache: "no-store" }));
+}
+
 export async function adminSaveItem(
   item: Partial<Item> & {
     name: string;
@@ -88,6 +92,7 @@ export async function adminSaveItem(
     stock: number;
     isActive: boolean;
     displayOrder: number;
+    category?: "DRINK" | "SNACK" | "OTHER";
     alertEnabled: boolean;
     alertThreshold: number;
     alertCondition: "LTE" | "EQ";
@@ -106,6 +111,7 @@ export async function adminSaveItem(
         isActive: item.isActive,
         imageUrl: item.imageUrl ?? null,
         displayOrder: item.displayOrder,
+        category: item.category,
         alertEnabled: item.alertEnabled,
         alertThreshold: item.alertThreshold,
         alertCondition: item.alertCondition,
@@ -122,6 +128,7 @@ export async function adminBulkUpsertItems(
       stock: number;
       isActive: boolean;
       displayOrder: number;
+      category?: "DRINK" | "SNACK" | "OTHER";
       alertEnabled: boolean;
       alertThreshold: number;
       alertCondition: "LTE" | "EQ";

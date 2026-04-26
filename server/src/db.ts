@@ -32,6 +32,7 @@ function initSchema(db: Database.Database) {
       is_active INTEGER NOT NULL DEFAULT 1,
       image_url TEXT,
       display_order INTEGER NOT NULL DEFAULT 0,
+      category TEXT NOT NULL DEFAULT 'OTHER',
       alert_enabled INTEGER NOT NULL DEFAULT 1,
       alert_threshold INTEGER NOT NULL DEFAULT 3,
       alert_condition TEXT NOT NULL DEFAULT 'LTE'
@@ -146,6 +147,7 @@ function initSchema(db: Database.Database) {
   ensureColumn(db, "items", "alert_threshold INTEGER NOT NULL DEFAULT 3");
   ensureColumn(db, "items", "alert_condition TEXT NOT NULL DEFAULT 'LTE'");
   ensureColumn(db, "items", "cost_price INTEGER NOT NULL DEFAULT 0");
+  ensureColumn(db, "items", "category TEXT NOT NULL DEFAULT 'OTHER'");
   ensureColumn(db, "buyers", "affiliation TEXT");
   db.exec(`
     UPDATE items
@@ -153,6 +155,14 @@ function initSchema(db: Database.Database) {
     WHERE cost_price IS NULL OR cost_price <= 0
   `);
   db.exec(`UPDATE items SET price = CAST(ROUND((cost_price * 1.1) / 10.0, 0) * 10 AS INTEGER)`);
+  db.exec(`
+    UPDATE items
+    SET category = CASE category
+      WHEN 'DRINK' THEN 'DRINK'
+      WHEN 'SNACK' THEN 'SNACK'
+      ELSE 'OTHER'
+    END
+  `);
 
   // 静的ファイルを public/IMG/items → public/images/items に移した既存 DB のパスを追随
   db.exec(`
@@ -219,6 +229,7 @@ export type ItemRow = {
   isActive: boolean;
   imageUrl: string | null;
   displayOrder: number;
+  category: "DRINK" | "SNACK" | "OTHER";
   alertEnabled: boolean;
   alertThreshold: number;
   alertCondition: "LTE" | "EQ";
@@ -248,6 +259,7 @@ function normItem(r: Record<string, unknown>): ItemRow {
     isActive: Boolean(r.isActive),
     imageUrl: r.imageUrl == null ? null : String(r.imageUrl),
     displayOrder: Number(r.displayOrder),
+    category: String(r.category) === "DRINK" ? "DRINK" : String(r.category) === "SNACK" ? "SNACK" : "OTHER",
     alertEnabled: Boolean(r.alertEnabled),
     alertThreshold: Number(r.alertThreshold ?? 0),
     alertCondition: String(r.alertCondition) === "EQ" ? "EQ" : "LTE",
@@ -259,6 +271,7 @@ export function listItemsForSale(db: Database.Database): ItemRow[] {
     .prepare(
       `SELECT item_id as itemId, name, cost_price as costPrice, price, stock,
               is_active as isActive, image_url as imageUrl, display_order as displayOrder,
+              category,
               alert_enabled as alertEnabled, alert_threshold as alertThreshold, alert_condition as alertCondition
        FROM items WHERE is_active = 1 ORDER BY display_order ASC, name ASC`
     )
@@ -305,6 +318,7 @@ export function listAllItems(db: Database.Database): ItemRow[] {
     .prepare(
       `SELECT item_id as itemId, name, cost_price as costPrice, price, stock,
               is_active as isActive, image_url as imageUrl, display_order as displayOrder,
+              category,
               alert_enabled as alertEnabled, alert_threshold as alertThreshold, alert_condition as alertCondition
        FROM items ORDER BY display_order ASC, name ASC`
     )
@@ -530,6 +544,7 @@ export function upsertItem(
     isActive: boolean;
     imageUrl: string | null;
     displayOrder: number;
+    category?: "DRINK" | "SNACK" | "OTHER";
     alertEnabled?: boolean;
     alertThreshold?: number;
     alertCondition?: "LTE" | "EQ";
@@ -540,13 +555,14 @@ export function upsertItem(
   const id = data.itemId && data.itemId.length > 0 ? data.itemId : nanoid();
   const alertThreshold = Math.max(0, Math.floor(data.alertThreshold ?? 3));
   const alertCondition = data.alertCondition === "EQ" ? "EQ" : "LTE";
+  const category = data.category === "DRINK" ? "DRINK" : data.category === "SNACK" ? "SNACK" : "OTHER";
   const normalizedCostPrice = normalizePrice(Number(data.costPrice));
   const normalizedPrice = Number.isFinite(Number(data.price))
     ? normalizePrice(Number(data.price))
     : calcSellPrice(normalizedCostPrice);
   db.prepare(
-    `INSERT INTO items (item_id, name, cost_price, price, stock, is_active, image_url, display_order, alert_enabled, alert_threshold, alert_condition)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `INSERT INTO items (item_id, name, cost_price, price, stock, is_active, image_url, display_order, category, alert_enabled, alert_threshold, alert_condition)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(item_id) DO UPDATE SET
        name = excluded.name,
        cost_price = excluded.cost_price,
@@ -555,6 +571,7 @@ export function upsertItem(
        is_active = excluded.is_active,
        image_url = excluded.image_url,
        display_order = excluded.display_order,
+      category = excluded.category,
        alert_enabled = excluded.alert_enabled,
        alert_threshold = excluded.alert_threshold,
        alert_condition = excluded.alert_condition`
@@ -567,6 +584,7 @@ export function upsertItem(
     data.isActive ? 1 : 0,
     data.imageUrl,
     data.displayOrder,
+    category,
     data.alertEnabled === false ? 0 : 1,
     alertThreshold,
     alertCondition

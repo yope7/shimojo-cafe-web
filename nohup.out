@@ -1,0 +1,18 @@
+
+> start
+> npm run start -w server
+
+
+> start
+> node dist/index.js
+
+Server http://localhost:8787
+
+> start
+> npm run start -w server
+
+
+> start
+> node dist/index.js
+
+Server http://localhost:8787

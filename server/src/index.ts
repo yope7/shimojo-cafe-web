@@ -1,3 +1,4 @@
+import "dotenv/config";
 import cors from "cors";
 import cookieParser from "cookie-parser";
 import express from "express";
@@ -69,9 +70,88 @@ app.use(
 );
 app.use(cookieParser());
 app.use(express.json({ limit: "1mb" }));
+app.use(express.static(path.join(__dirname, "..", "..", "client", "public")));
 
 function adminPassword(): string | undefined {
   return process.env.ADMIN_PASSWORD ?? getSetting(db, "admin_password");
+}
+
+type AlertingItem = {
+  itemId: string;
+  name: string;
+  stock: number;
+  alertThreshold: number;
+  alertCondition: "LTE" | "EQ";
+};
+
+function purchasedItemAlerts(itemIds: string[]): AlertingItem[] {
+  if (itemIds.length === 0) return [];
+  const target = new Set(itemIds);
+  return listStockAlerts(db)
+    .filter((row) => row.isAlerting && target.has(row.itemId))
+    .map((row) => ({
+      itemId: row.itemId,
+      name: row.name,
+      stock: row.stock,
+      alertThreshold: row.alertThreshold,
+      alertCondition: row.alertCondition,
+    }));
+}
+
+async function postSlack(text: string): Promise<void> {
+  const webhookUrl = process.env.SLACK_WEBHOOK_URL;
+  if (webhookUrl) {
+    const res = await fetch(webhookUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text }),
+    });
+    if (!res.ok) throw new Error(`SLACK_WEBHOOK_ERROR:${res.status}`);
+    return;
+  }
+
+  const botToken = process.env.SLACK_BOT_TOKEN;
+  const channel = process.env.SLACK_CHANNEL_ID;
+  if (!botToken || !channel) return;
+  const res = await fetch("https://slack.com/api/chat.postMessage", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json; charset=utf-8",
+      Authorization: `Bearer ${botToken}`,
+    },
+    body: JSON.stringify({
+      channel,
+      text,
+      unfurl_links: false,
+      unfurl_media: false,
+    }),
+  });
+  if (!res.ok) throw new Error(`SLACK_API_ERROR:${res.status}`);
+  const payload = (await res.json()) as { ok?: boolean; error?: string };
+  if (!payload.ok) throw new Error(`SLACK_API_ERROR:${payload.error ?? "unknown"}`);
+}
+
+function buildSlackAlertMessage(context: string, alerts: AlertingItem[]): string {
+  void context;
+  const nowJst = new Intl.DateTimeFormat("ja-JP", {
+    timeZone: "Asia/Tokyo",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  }).format(new Date());
+  const lines = alerts.map((it) => `・${it.name}（残り：${it.stock}個）`);
+  return [":rotating_light: 在庫が減っています", ...lines, `時刻：${nowJst}`].join("\n");
+}
+
+async function notifySlackForTriggeredStockAlerts(before: Set<string>, context: string): Promise<void> {
+  const triggered = purchasedItemAlerts(Array.from(before));
+  if (triggered.length === 0) return;
+  const text = buildSlackAlertMessage(context, triggered);
+  await postSlack(text);
 }
 
 app.get("/api/health", (_req, res) => {
@@ -180,6 +260,10 @@ app.post("/api/purchases", (req, res) => {
     const buyerId = bt === "NAMED" ? (body.buyerId ?? null) : null;
     const tid = body.terminalId ?? TERMINAL_ID;
     const result = completePurchase(db, lines, pm, bt, buyerId, tid);
+    const purchasedItemIds = lines.map((line) => line.itemId);
+    void notifySlackForTriggeredStockAlerts(new Set(purchasedItemIds), "購入").catch((err) => {
+      console.error("Failed to send Slack stock alert", err);
+    });
     const summary = getPurchase(db, result.purchaseId);
     res.status(201).json({ purchase: summary });
   } catch (e) {
@@ -203,6 +287,26 @@ app.get("/api/admin/items", requireAdmin, (_req, res) => {
   res.json({ items: listAllItems(db) });
 });
 
+app.get("/api/admin/item-images", requireAdmin, (_req, res) => {
+  try {
+    const itemImageDir = path.join(__dirname, "..", "..", "client", "public", "images", "items");
+    if (!fs.existsSync(itemImageDir)) {
+      res.json({ images: [] });
+      return;
+    }
+    const images = fs
+      .readdirSync(itemImageDir, { withFileTypes: true })
+      .filter((entry) => entry.isFile())
+      .map((entry) => entry.name)
+      .filter((name) => /\.(png|jpe?g|webp|avif|svg)$/i.test(name))
+      .sort((a, b) => a.localeCompare(b, "ja"))
+      .map((name) => `/images/items/${name}`);
+    res.json({ images });
+  } catch {
+    res.status(500).json({ error: "SERVER_ERROR" });
+  }
+});
+
 app.put("/api/admin/items/:itemId", requireAdmin, (req, res) => {
   const param = String(req.params.itemId);
   const body = req.body as {
@@ -213,6 +317,7 @@ app.put("/api/admin/items/:itemId", requireAdmin, (req, res) => {
     isActive: boolean;
     imageUrl: string | null;
     displayOrder: number;
+    category?: "DRINK" | "SNACK" | "OTHER";
     alertEnabled?: boolean;
     alertThreshold?: number;
     alertCondition?: "LTE" | "EQ";
@@ -226,6 +331,7 @@ app.put("/api/admin/items/:itemId", requireAdmin, (req, res) => {
     isActive: !!body.isActive,
     imageUrl: body.imageUrl ?? null,
     displayOrder: Math.floor(body.displayOrder ?? 0),
+    category: body.category,
     alertEnabled: body.alertEnabled !== false,
     alertThreshold: Math.floor(body.alertThreshold ?? 3),
     alertCondition: body.alertCondition === "EQ" ? "EQ" : "LTE",
@@ -249,6 +355,7 @@ app.post("/api/admin/items", requireAdmin, (req, res) => {
     isActive: boolean;
     imageUrl: string | null;
     displayOrder: number;
+    category?: "DRINK" | "SNACK" | "OTHER";
     alertEnabled?: boolean;
     alertThreshold?: number;
     alertCondition?: "LTE" | "EQ";
@@ -261,6 +368,7 @@ app.post("/api/admin/items", requireAdmin, (req, res) => {
     isActive: !!body.isActive,
     imageUrl: body.imageUrl ?? null,
     displayOrder: Math.floor(body.displayOrder ?? 0),
+    category: body.category,
     alertEnabled: body.alertEnabled !== false,
     alertThreshold: Math.floor(body.alertThreshold ?? 3),
     alertCondition: body.alertCondition === "EQ" ? "EQ" : "LTE",
@@ -286,6 +394,7 @@ app.post("/api/admin/items/bulk-upsert", requireAdmin, (req, res) => {
       isActive?: boolean;
       imageUrl?: string | null;
       displayOrder?: number;
+      category?: "DRINK" | "SNACK" | "OTHER";
       alertEnabled?: boolean;
       alertThreshold?: number;
       alertCondition?: "LTE" | "EQ";
@@ -317,6 +426,7 @@ app.post("/api/admin/items/bulk-upsert", requireAdmin, (req, res) => {
       isActive: row.isActive !== false,
       imageUrl: row.imageUrl ?? null,
       displayOrder: Math.floor(Number(row.displayOrder ?? 0)),
+      category: row.category,
       alertEnabled: row.alertEnabled !== false,
       alertThreshold: Math.floor(Number(row.alertThreshold ?? 3)),
       alertCondition: row.alertCondition === "EQ" ? "EQ" : "LTE",

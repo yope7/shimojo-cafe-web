@@ -1,7 +1,9 @@
 import { useEffect, useState } from "react";
+import { useLottie } from "lottie-react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import type { PurchaseDetail } from "../api";
 import { useIdleReset } from "../useIdleReset";
+import successConfetti from "../assets/success confetti.json";
 
 const AUTO_HOME_SEC = 3;
 
@@ -12,6 +14,11 @@ export function Done({ onIdleReset }: { onIdleReset: () => void }) {
   const location = useLocation();
   const purchase = (location.state as Loc | null)?.purchase;
   const [tick, setTick] = useState(0);
+  const { View: doneAnimation } = useLottie({
+    animationData: successConfetti,
+    autoplay: true,
+    loop: false,
+  });
 
   useIdleReset(true, onIdleReset, 45_000);
 
@@ -30,7 +37,7 @@ export function Done({ onIdleReset }: { onIdleReset: () => void }) {
   return (
     <div className="page done">
       <div className="done-icon" aria-hidden>
-        ✓
+        <div className="done-rive">{doneAnimation}</div>
       </div>
       <h1>購入を記録しました</h1>
       <p className="muted">お支払いは案内に従って完了してください。</p>

@@ -1,5 +1,5 @@
-import { useEffect, useState, type ChangeEvent } from "react";
-import { adminBulkUpsertItems, adminItems } from "../../api";
+import { useEffect, useMemo, useState, type ChangeEvent } from "react";
+import { adminBulkUpsertItems, adminItemImages, adminItems } from "../../api";
 import type { Item } from "../../types";
 
 type CsvRow = {
@@ -11,9 +11,23 @@ type CsvRow = {
   isActive: boolean;
   imageUrl: string | null;
   displayOrder: number;
+  category?: "DRINK" | "SNACK" | "OTHER";
   alertEnabled: boolean;
   alertThreshold: number;
   alertCondition: "LTE" | "EQ";
+};
+
+const CATEGORY_OPTIONS = [
+  { value: "DRINK", label: "ドリンク" },
+  { value: "SNACK", label: "お菓子" },
+  { value: "OTHER", label: "その他" },
+] as const;
+type ItemCategory = (typeof CATEGORY_OPTIONS)[number]["value"];
+
+const CATEGORY_ORDER: Record<ItemCategory, number> = {
+  DRINK: 0,
+  SNACK: 1,
+  OTHER: 2,
 };
 
 function parseCsvLine(line: string): string[] {
@@ -75,6 +89,9 @@ function parseCsv(text: string): CsvRow[] {
     const name = read("name");
     const costPrice = Number(read("price"));
     const stock = Number(read("stock"));
+    const categoryRaw = read("category");
+    const category: ItemCategory =
+      categoryRaw === "DRINK" || categoryRaw === "SNACK" || categoryRaw === "OTHER" ? categoryRaw : "OTHER";
     if (!name || !Number.isFinite(costPrice) || !Number.isFinite(stock)) {
       throw new Error(`CSV ${rowNo + 1}行目が不正です`);
     }
@@ -87,6 +104,7 @@ function parseCsv(text: string): CsvRow[] {
       isActive: parseBool(read("isActive"), true),
       imageUrl: read("imageUrl") || null,
       displayOrder: Math.max(0, Math.floor(Number(read("displayOrder") || "0"))),
+      category,
       alertEnabled: false,
       alertThreshold: 3,
       alertCondition: "LTE",
@@ -123,34 +141,47 @@ async function copyText(text: string): Promise<boolean> {
 export function AdminItems() {
   const [items, setItems] = useState<Item[]>([]);
   const [drafts, setDrafts] = useState<Record<string, Item>>({});
+  const [itemImages, setItemImages] = useState<string[]>([]);
   const [newItem, setNewItem] = useState<Item | null>(null);
   const [savingAll, setSavingAll] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [helpOpen, setHelpOpen] = useState(false);
   const [csvText, setCsvText] = useState("");
+  const [csvPanelOpen, setCsvPanelOpen] = useState(false);
   const calcSellPrice = (costPrice: number) => Math.max(0, Math.round((costPrice * 1.1) / 10) * 10);
   const calcSellSliderMax = (costPrice: number) => Math.max(100, Math.ceil((Math.max(costPrice, 0) * 2) / 10) * 10);
+  const imageListId = "admin-item-image-list";
 
   const csvPrompt = `以下の条件で、UTF-8のCSVを出力してください。
 - 1行目はヘッダー
 - 必須列: name,price,stock
-- 任意列: itemId,isActive,imageUrl,displayOrder
+- 任意列: itemId,isActive,imageUrl,displayOrder,category
 - isActive は true または false
+- category は DRINK / SNACK / OTHER のいずれか（未指定は OTHER）
 - 数値は整数
 - アラート設定列は不要（取り込み時にデフォルトでOFF）
 - 余計な説明文は付けず、CSV本文のみ出力
 
 例ヘッダー:
-itemId,name,price,stock,isActive,imageUrl,displayOrder`;
+itemId,name,price,stock,isActive,imageUrl,displayOrder,category`;
 
   const load = () => {
-    adminItems()
-      .then((r) => {
-        setItems(r.items);
+    Promise.all([adminItems(), adminItemImages()])
+      .then(([itemRes, imageRes]) => {
+        const sortedItems = [...itemRes.items].sort((a, b) => {
+          const aCategory = a.category ?? "OTHER";
+          const bCategory = b.category ?? "OTHER";
+          const byCategory = CATEGORY_ORDER[aCategory] - CATEGORY_ORDER[bCategory];
+          if (byCategory !== 0) return byCategory;
+          if (a.displayOrder !== b.displayOrder) return a.displayOrder - b.displayOrder;
+          return a.name.localeCompare(b.name, "ja");
+        });
+        setItems(sortedItems);
+        setItemImages(imageRes.images);
         setDrafts((prev) => {
           const next: Record<string, Item> = {};
-          for (const item of r.items) {
+          for (const item of sortedItems) {
             next[item.itemId] = prev[item.itemId] ?? { ...item };
           }
           return next;
@@ -163,6 +194,35 @@ itemId,name,price,stock,isActive,imageUrl,displayOrder`;
     load();
   }, []);
 
+  const sortedItemsForView = useMemo(() => {
+    return [...items].sort((a, b) => {
+      const aDraft = drafts[a.itemId] ?? a;
+      const bDraft = drafts[b.itemId] ?? b;
+      const aCategory = aDraft.category ?? "OTHER";
+      const bCategory = bDraft.category ?? "OTHER";
+      const byCategory = CATEGORY_ORDER[aCategory] - CATEGORY_ORDER[bCategory];
+      if (byCategory !== 0) return byCategory;
+      if (aDraft.displayOrder !== bDraft.displayOrder) return aDraft.displayOrder - bDraft.displayOrder;
+      return aDraft.name.localeCompare(bDraft.name, "ja");
+    });
+  }, [items, drafts]);
+
+  const hasItemChanged = (base: Item, next: Item): boolean => {
+    return (
+      base.name !== next.name ||
+      base.costPrice !== next.costPrice ||
+      base.price !== next.price ||
+      base.stock !== next.stock ||
+      base.isActive !== next.isActive ||
+      (base.imageUrl ?? null) !== (next.imageUrl ?? null) ||
+      base.displayOrder !== next.displayOrder ||
+      base.category !== next.category ||
+      base.alertEnabled !== next.alertEnabled ||
+      base.alertThreshold !== next.alertThreshold ||
+      base.alertCondition !== next.alertCondition
+    );
+  };
+
   const saveAllRows = async () => {
     setError(null);
     setNotice(null);
@@ -171,8 +231,12 @@ itemId,name,price,stock,isActive,imageUrl,displayOrder`;
       if (newItem && newItem.name.trim().length === 0) {
         throw new Error("新規商品の名前を入力してください");
       }
-      const rows = items.map((it) => drafts[it.itemId] ?? it);
-      const payload: CsvRow[] = rows.map((row) => ({
+      const changedRows = items
+        .map((it) => ({ base: it, next: drafts[it.itemId] ?? it }))
+        .filter(({ base, next }) => hasItemChanged(base, next))
+        .map(({ next }) => next);
+
+      const payload: CsvRow[] = changedRows.map((row) => ({
         itemId: row.itemId,
         name: row.name,
         costPrice: row.costPrice,
@@ -181,6 +245,7 @@ itemId,name,price,stock,isActive,imageUrl,displayOrder`;
         isActive: row.isActive,
         imageUrl: row.imageUrl,
         displayOrder: row.displayOrder,
+        category: row.category ?? "OTHER",
         alertEnabled: row.alertEnabled,
         alertThreshold: row.alertThreshold,
         alertCondition: row.alertCondition,
@@ -194,13 +259,18 @@ itemId,name,price,stock,isActive,imageUrl,displayOrder`;
           isActive: newItem.isActive,
           imageUrl: newItem.imageUrl,
           displayOrder: newItem.displayOrder,
+          category: newItem.category ?? "OTHER",
           alertEnabled: newItem.alertEnabled,
           alertThreshold: newItem.alertThreshold,
           alertCondition: newItem.alertCondition,
         });
       }
-      const result = await adminBulkUpsertItems(payload);
-      setNotice(`${result.updated} 件を保存しました`);
+      if (payload.length === 0) {
+        setNotice("変更はありません");
+        return;
+      }
+      await adminBulkUpsertItems(payload);
+      setNotice(`${payload.length} 件を保存しました`);
       setNewItem(null);
       load();
     } catch (err) {
@@ -250,78 +320,89 @@ itemId,name,price,stock,isActive,imageUrl,displayOrder`;
       {error && <p className="banner error">{error}</p>}
       {notice && <p className="banner">{notice}</p>}
 
-      <button
-        type="button"
-        className="btn primary"
-        onClick={() => {
-          setNewItem({
-            itemId: "",
-            name: "",
-            costPrice: 100,
-            price: calcSellPrice(100),
-            stock: 0,
-            isActive: true,
-            imageUrl: null,
-            displayOrder: items.length,
-            alertEnabled: false,
-            alertThreshold: 3,
-            alertCondition: "LTE",
-          });
-        }}
-      >
-        新規追加
-      </button>
-      <button type="button" className="btn primary" style={{ marginLeft: 8 }} disabled={savingAll} onClick={() => void saveAllRows()}>
-        変更を一括保存
-      </button>
-      <label className="btn secondary" style={{ marginLeft: 8 }}>
-        CSV一括更新
-        <input type="file" accept=".csv,text/csv" onChange={(e) => void onCsvSelected(e)} style={{ display: "none" }} />
-      </label>
-      <button
-        type="button"
-        className="admin-help-icon"
-        aria-label="CSVヘルプ"
-        title="CSV生成プロンプト"
-        onClick={() => setHelpOpen(true)}
-      >
-        ❓
-      </button>
-
-      <div className="admin-section-card admin-csv-panel">
-        <div className="admin-csv-panel-head">
-          <h2>CSVテキスト入力（貼り付け可）</h2>
-        </div>
-        <label className="admin-csv-label">
-          CSV本文
-          <textarea
-            className="input admin-csv-textarea"
-            rows={8}
-            value={csvText}
-            onChange={(e) => setCsvText(e.target.value)}
-            placeholder={"name,price,stock\nコーヒー,150,12\n紅茶,140,9"}
-          />
-        </label>
-        <div className="row-actions single admin-csv-actions">
-          <button type="button" className="btn secondary" onClick={() => void onCsvTextSubmit()}>
-            テキストから一括更新
-          </button>
-        </div>
+      <div className="admin-items-actions">
+        <button
+          type="button"
+          className="btn primary"
+          onClick={() => {
+            setNewItem({
+              itemId: "",
+              name: "",
+              costPrice: 100,
+              price: calcSellPrice(100),
+              stock: 0,
+              isActive: true,
+              imageUrl: null,
+              displayOrder: items.length,
+              category: "OTHER",
+              alertEnabled: false,
+              alertThreshold: 3,
+              alertCondition: "LTE",
+            });
+          }}
+        >
+          新規追加
+        </button>
+        <button type="button" className="btn primary" disabled={savingAll} onClick={() => void saveAllRows()}>
+          変更を一括保存
+        </button>
+        <button type="button" className="btn secondary" onClick={() => setCsvPanelOpen((prev) => !prev)}>
+          {csvPanelOpen ? "CSV追加を閉じる" : "CSVから追加"}
+        </button>
       </div>
 
-      <table className="admin-table">
-        <thead>
-          <tr>
-            <th className="admin-col-name">名前</th>
-            <th>仕入れ値</th>
-            <th>販売価格</th>
-            <th>在庫</th>
-            <th>アラート</th>
-            <th>表示</th>
-            <th>操作</th>
-          </tr>
-        </thead>
-        <tbody>
+      {csvPanelOpen && (
+        <div className="admin-section-card admin-csv-panel">
+          <div className="admin-csv-panel-head">
+            <h2>CSVテキスト入力（貼り付け可）</h2>
+            <div className="admin-csv-panel-head-actions">
+              <label className="btn secondary">
+                CSV一括更新
+                <input type="file" accept=".csv,text/csv" onChange={(e) => void onCsvSelected(e)} style={{ display: "none" }} />
+              </label>
+              <button
+                type="button"
+                className="admin-help-icon"
+                aria-label="CSVヘルプ"
+                title="CSV生成プロンプト"
+                onClick={() => setHelpOpen(true)}
+              >
+                ❓
+              </button>
+            </div>
+          </div>
+          <label className="admin-csv-label">
+            CSV本文
+            <textarea
+              className="input admin-csv-textarea"
+              rows={8}
+              value={csvText}
+              onChange={(e) => setCsvText(e.target.value)}
+              placeholder={"name,price,stock\nコーヒー,150,12\n紅茶,140,9"}
+            />
+          </label>
+          <div className="row-actions single admin-csv-actions">
+            <button type="button" className="btn secondary" onClick={() => void onCsvTextSubmit()}>
+              テキストから一括更新
+            </button>
+          </div>
+        </div>
+      )}
+
+      <div className="admin-table-scroll">
+        <table className="admin-table admin-items-table">
+          <thead>
+            <tr>
+              <th className="admin-col-name">名前</th>
+              <th>仕入れ値</th>
+              <th>販売価格</th>
+              <th>在庫</th>
+              <th>ラベル</th>
+              <th>アラート</th>
+              <th>表示</th>
+            </tr>
+          </thead>
+          <tbody>
           {newItem && (
             <tr key="new-item-row">
               <td className="admin-col-name">
@@ -330,6 +411,20 @@ itemId,name,price,stock,isActive,imageUrl,displayOrder`;
                   value={newItem.name}
                   onChange={(e) => setNewItem({ ...newItem, name: e.target.value })}
                 />
+                <div className="admin-item-image-row">
+                  <input
+                    className="input admin-image-url-input"
+                    list={imageListId}
+                    value={newItem.imageUrl ?? ""}
+                    placeholder="/images/items/xxx.png"
+                    onChange={(e) => setNewItem({ ...newItem, imageUrl: e.target.value || null })}
+                  />
+                  {newItem.imageUrl ? (
+                    <img className="admin-item-image-preview" src={newItem.imageUrl} alt={`${newItem.name || "新規商品"}画像`} />
+                  ) : (
+                    <span className="admin-item-image-empty">画像なし</span>
+                  )}
+                </div>
               </td>
               <td>
                 <input
@@ -366,6 +461,19 @@ itemId,name,price,stock,isActive,imageUrl,displayOrder`;
                 />
               </td>
               <td>
+                <select
+                  className="input"
+                  value={newItem.category ?? "OTHER"}
+                  onChange={(e) => setNewItem({ ...newItem, category: e.target.value as ItemCategory })}
+                >
+                  {CATEGORY_OPTIONS.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+              </td>
+              <td>
                 <label className="admin-switch">
                   <input
                     type="checkbox"
@@ -391,19 +499,9 @@ itemId,name,price,stock,isActive,imageUrl,displayOrder`;
                   <span className="admin-switch-label">{newItem.isActive ? "ON" : "OFF"}</span>
                 </label>
               </td>
-              <td>
-                <button
-                  type="button"
-                  className="linkish"
-                  disabled={savingAll}
-                  onClick={() => setNewItem(null)}
-                >
-                  キャンセル
-                </button>
-              </td>
             </tr>
           )}
-          {items.map((it) => (
+          {sortedItemsForView.map((it) => (
             <tr key={it.itemId}>
               <td className="admin-col-name">
                 <input
@@ -416,6 +514,29 @@ itemId,name,price,stock,isActive,imageUrl,displayOrder`;
                     }))
                   }
                 />
+                <div className="admin-item-image-row">
+                  <input
+                    className="input admin-image-url-input"
+                    list={imageListId}
+                    value={drafts[it.itemId]?.imageUrl ?? it.imageUrl ?? ""}
+                    placeholder="/images/items/xxx.png"
+                    onChange={(e) =>
+                      setDrafts((prev) => ({
+                        ...prev,
+                        [it.itemId]: { ...(prev[it.itemId] ?? it), imageUrl: e.target.value || null },
+                      }))
+                    }
+                  />
+                  {(drafts[it.itemId]?.imageUrl ?? it.imageUrl) ? (
+                    <img
+                      className="admin-item-image-preview"
+                      src={(drafts[it.itemId]?.imageUrl ?? it.imageUrl) ?? ""}
+                      alt={`${drafts[it.itemId]?.name ?? it.name}画像`}
+                    />
+                  ) : (
+                    <span className="admin-item-image-empty">画像なし</span>
+                  )}
+                </div>
               </td>
               <td>
                 <input
@@ -468,6 +589,24 @@ itemId,name,price,stock,isActive,imageUrl,displayOrder`;
                 />
               </td>
               <td>
+                <select
+                  className="input"
+                  value={drafts[it.itemId]?.category ?? it.category ?? "OTHER"}
+                  onChange={(e) =>
+                    setDrafts((prev) => ({
+                      ...prev,
+                      [it.itemId]: { ...(prev[it.itemId] ?? it), category: e.target.value as ItemCategory },
+                    }))
+                  }
+                >
+                  {CATEGORY_OPTIONS.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+              </td>
+              <td>
                 <label className="admin-switch">
                   <input
                     type="checkbox"
@@ -507,25 +646,17 @@ itemId,name,price,stock,isActive,imageUrl,displayOrder`;
                   </span>
                 </label>
               </td>
-              <td>
-                <button
-                  type="button"
-                  className="linkish"
-                  disabled={savingAll}
-                  onClick={() =>
-                    setDrafts((prev) => ({
-                      ...prev,
-                      [it.itemId]: { ...it },
-                    }))
-                  }
-                >
-                  取消
-                </button>
-              </td>
             </tr>
           ))}
-        </tbody>
-      </table>
+          </tbody>
+        </table>
+      </div>
+
+      <datalist id={imageListId}>
+        {itemImages.map((url) => (
+          <option key={url} value={url} />
+        ))}
+      </datalist>
 
       {helpOpen && (
         <div className="modal" onClick={() => setHelpOpen(false)}>

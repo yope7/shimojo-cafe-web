@@ -592,6 +592,22 @@ export function upsertItem(
   return id;
 }
 
+export function clearAllItemStocks(db: Database.Database): { updated: number } {
+  const result = db.prepare(`UPDATE items SET stock = 0`).run();
+  return { updated: result.changes };
+}
+
+export function deleteItem(db: Database.Database, itemId: string): boolean {
+  try {
+    const result = db.prepare(`DELETE FROM items WHERE item_id = ?`).run(itemId);
+    return result.changes === 1;
+  } catch (e) {
+    const message = e instanceof Error ? e.message : "";
+    if (message.includes("FOREIGN KEY constraint failed")) throw new Error("ITEM_IN_USE");
+    throw e;
+  }
+}
+
 export function upsertBuyer(
   db: Database.Database,
   data: { buyerId?: string; name: string; photoUrl: string | null; affiliation?: string | null; isActive: boolean }

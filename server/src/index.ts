@@ -46,6 +46,8 @@ import {
   updateSupplyRequestStatus,
   deleteBuyer,
   deletePurchase,
+  clearAllItemStocks,
+  deleteItem,
   upsertBuyer,
   upsertFinanceSnapshot,
   upsertItem,
@@ -99,7 +101,7 @@ function purchasedItemAlerts(itemIds: string[]): AlertingItem[] {
 }
 
 async function postSlack(text: string): Promise<void> {
-  const webhookUrl = process.env.SLACK_WEBHOOK_URL;
+  const webhookUrl = process.env.SLACK_WEBHOOK_URL_forAlert;
   if (webhookUrl) {
     const res = await fetch(webhookUrl, {
       method: "POST",
@@ -129,6 +131,17 @@ async function postSlack(text: string): Promise<void> {
   if (!res.ok) throw new Error(`SLACK_API_ERROR:${res.status}`);
   const payload = (await res.json()) as { ok?: boolean; error?: string };
   if (!payload.ok) throw new Error(`SLACK_API_ERROR:${payload.error ?? "unknown"}`);
+}
+
+async function postSlackForAll(text: string): Promise<void> {
+  const webhookUrl = process.env.SLACK_WEBHOOK_URL_forAll;
+  if (!webhookUrl) return;
+  const res = await fetch(webhookUrl, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ text }),
+  });
+  if (!res.ok) throw new Error(`SLACK_WEBHOOK_FOR_ALL_ERROR:${res.status}`);
 }
 
 function buildSlackAlertMessage(context: string, alerts: AlertingItem[]): string {
@@ -383,6 +396,31 @@ app.post("/api/admin/items", requireAdmin, (req, res) => {
   res.json({ itemId });
 });
 
+app.delete("/api/admin/items/:itemId", requireAdmin, (req, res) => {
+  const itemId = String(req.params.itemId);
+  try {
+    const deleted = deleteItem(db, itemId);
+    if (!deleted) {
+      res.status(404).json({ error: "NOT_FOUND" });
+      return;
+    }
+    addAdminOperationLog(db, {
+      action: "DELETE_ITEM",
+      targetType: "ITEM",
+      targetId: itemId,
+      actor: "admin",
+    });
+    res.json({ deleted: true });
+  } catch (e) {
+    const code = e instanceof Error ? e.message : "ERROR";
+    if (code === "ITEM_IN_USE") {
+      res.status(409).json({ error: code });
+      return;
+    }
+    res.status(500).json({ error: "SERVER_ERROR" });
+  }
+});
+
 app.post("/api/admin/items/bulk-upsert", requireAdmin, (req, res) => {
   const body = req.body as {
     items?: Array<{
@@ -442,6 +480,27 @@ app.post("/api/admin/items/bulk-upsert", requireAdmin, (req, res) => {
   }
 
   res.json({ updated });
+});
+
+app.post("/api/admin/notifications/all", requireAdmin, async (req, res) => {
+  const body = req.body as { text?: string };
+  const text = String(body.text ?? "").trim();
+  if (!text) {
+    res.status(400).json({ error: "BAD_TEXT" });
+    return;
+  }
+  try {
+    await postSlackForAll(text);
+    addAdminOperationLog(db, {
+      action: "SEND_ALL_NOTIFICATION",
+      targetType: "SLACK",
+      detail: JSON.stringify({ textLength: text.length }),
+      actor: "admin",
+    });
+    res.json({ ok: true });
+  } catch {
+    res.status(500).json({ error: "SLACK_SEND_FAILED" });
+  }
 });
 
 app.get("/api/admin/buyers", requireAdmin, (_req, res) => {
@@ -599,6 +658,17 @@ app.post("/api/admin/items/apply-tax", requireAdmin, (req, res) => {
     action: "APPLY_TAX_TO_ITEMS",
     targetType: "ITEM",
     detail: JSON.stringify({ ratePercent, updated: result.updated }),
+    actor: "admin",
+  });
+  res.json(result);
+});
+
+app.post("/api/admin/items/clear-stocks", requireAdmin, (_req, res) => {
+  const result = clearAllItemStocks(db);
+  addAdminOperationLog(db, {
+    action: "CLEAR_ALL_ITEM_STOCKS",
+    targetType: "ITEM",
+    detail: JSON.stringify(result),
     actor: "admin",
   });
   res.json(result);

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState, type ChangeEvent } from "react";
-import { adminBulkUpsertItems, adminItemImages, adminItems } from "../../api";
+import { adminBulkUpsertItems, adminDeleteItem, adminItemImages, adminItems, adminSendAllNotification } from "../../api";
 import type { Item } from "../../types";
 
 type CsvRow = {
@@ -149,6 +149,8 @@ export function AdminItems() {
   const [helpOpen, setHelpOpen] = useState(false);
   const [csvText, setCsvText] = useState("");
   const [csvPanelOpen, setCsvPanelOpen] = useState(false);
+  const [deletingItemId, setDeletingItemId] = useState<string | null>(null);
+  const [notifySlackOnSave, setNotifySlackOnSave] = useState(false);
   const calcSellPrice = (costPrice: number) => Math.max(0, Math.round((costPrice * 1.1) / 10) * 10);
   const calcSellSliderMax = (costPrice: number) => Math.max(100, Math.ceil((Math.max(costPrice, 0) * 2) / 10) * 10);
   const imageListId = "admin-item-image-list";
@@ -270,7 +272,17 @@ itemId,name,price,stock,isActive,imageUrl,displayOrder,category`;
         return;
       }
       await adminBulkUpsertItems(payload);
-      setNotice(`${payload.length} 件を保存しました`);
+      if (notifySlackOnSave) {
+        try {
+          await adminSendAllNotification(`商品情報を更新しました（更新件数: ${payload.length}）`);
+          setNotice(`${payload.length} 件を保存しました（Slack通知送信済み）`);
+        } catch {
+          setNotice(`${payload.length} 件を保存しました`);
+          setError("保存は完了しましたが、Slack通知の送信に失敗しました");
+        }
+      } else {
+        setNotice(`${payload.length} 件を保存しました`);
+      }
       setNewItem(null);
       load();
     } catch (err) {
@@ -314,6 +326,32 @@ itemId,name,price,stock,isActive,imageUrl,displayOrder,category`;
     }
   };
 
+  const deleteItemRow = async (item: Item) => {
+    const ok = window.confirm(`「${item.name}」を削除します。よろしいですか？`);
+    if (!ok) return;
+    setError(null);
+    setNotice(null);
+    setDeletingItemId(item.itemId);
+    try {
+      await adminDeleteItem(item.itemId);
+      setNotice(`${item.name} を削除しました`);
+      load();
+    } catch (e) {
+      const message = e instanceof Error ? e.message : "削除に失敗しました";
+      if (message === "ITEM_IN_USE") {
+        setError("この商品は購入履歴などで参照されているため削除できません。必要なら「表示」をOFFにしてください。");
+      } else if (message === "NOT_FOUND") {
+        setError("対象の商品が見つかりませんでした。画面を再読み込みしてください。");
+      } else if (message === "UNAUTHORIZED" || message === "FORBIDDEN") {
+        setError("管理者セッションが切れています。再ログインしてから削除してください。");
+      } else {
+        setError(`商品の削除に失敗しました（${message}）`);
+      }
+    } finally {
+      setDeletingItemId(null);
+    }
+  };
+
   return (
     <div className="admin-page">
       <h1>商品管理</h1>
@@ -349,6 +387,17 @@ itemId,name,price,stock,isActive,imageUrl,displayOrder,category`;
         <button type="button" className="btn secondary" onClick={() => setCsvPanelOpen((prev) => !prev)}>
           {csvPanelOpen ? "CSV追加を閉じる" : "CSVから追加"}
         </button>
+        <label className="admin-switch">
+          <input
+            type="checkbox"
+            checked={notifySlackOnSave}
+            onChange={(e) => setNotifySlackOnSave(e.target.checked)}
+          />
+          <span className="admin-switch-track" aria-hidden="true">
+            <span className="admin-switch-thumb" />
+          </span>
+          <span className="admin-switch-label">保存時にSlack通知</span>
+        </label>
       </div>
 
       {csvPanelOpen && (
@@ -400,6 +449,7 @@ itemId,name,price,stock,isActive,imageUrl,displayOrder,category`;
               <th>ラベル</th>
               <th>アラート</th>
               <th>表示</th>
+              <th>操作</th>
             </tr>
           </thead>
           <tbody>
@@ -498,6 +548,9 @@ itemId,name,price,stock,isActive,imageUrl,displayOrder,category`;
                   </span>
                   <span className="admin-switch-label">{newItem.isActive ? "ON" : "OFF"}</span>
                 </label>
+              </td>
+              <td>
+                <span className="muted small">未保存</span>
               </td>
             </tr>
           )}
@@ -645,6 +698,16 @@ itemId,name,price,stock,isActive,imageUrl,displayOrder,category`;
                     {(drafts[it.itemId]?.isActive ?? it.isActive) ? "ON" : "OFF"}
                   </span>
                 </label>
+              </td>
+              <td>
+                <button
+                  type="button"
+                  className="btn ghost"
+                  disabled={deletingItemId === it.itemId}
+                  onClick={() => void deleteItemRow(it)}
+                >
+                  {deletingItemId === it.itemId ? "削除中..." : "削除"}
+                </button>
               </td>
             </tr>
           ))}

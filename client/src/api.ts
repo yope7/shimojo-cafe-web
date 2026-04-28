@@ -278,6 +278,32 @@ export async function adminApplyTaxToItems(ratePercent: number = 10) {
   );
 }
 
+export async function adminClearItemStocks() {
+  return json<{ updated: number }>(
+    adminFetch("/api/admin/items/clear-stocks", {
+      method: "POST",
+    })
+  );
+}
+
+export async function adminDeleteItem(itemId: string) {
+  return json<{ deleted: boolean }>(
+    adminFetch(`/api/admin/items/${encodeURIComponent(itemId)}`, {
+      method: "DELETE",
+    })
+  );
+}
+
+export async function adminSendAllNotification(text: string) {
+  return json<{ ok: boolean }>(
+    adminFetch("/api/admin/notifications/all", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text }),
+    })
+  );
+}
+
 export async function adminSettings(body: {
   paypayInstruction?: string;
   cashInstruction?: string;
